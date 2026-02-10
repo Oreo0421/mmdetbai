@@ -38,6 +38,7 @@ class RTMDetWithPose(SingleStageDetector):
         pose_roi_extractor: OptConfigType = None,
         pose_det_cfg: OptConfigType = None,
         pose_topk: int = 1,
+        pose_min_box_size: float = 2.0,
         train_cfg: OptConfigType = None,
         test_cfg: OptConfigType = None,
         data_preprocessor: OptConfigType = None,
@@ -62,6 +63,7 @@ class RTMDetWithPose(SingleStageDetector):
         )
         self.pose_det_cfg = pose_det_cfg
         self.pose_topk = pose_topk
+        self.pose_min_box_size = float(pose_min_box_size)
     
     def loss(self, batch_inputs: Tensor, batch_data_samples: SampleList) -> dict:
         """Calculate detection + pose estimation losses.
@@ -93,7 +95,9 @@ class RTMDetWithPose(SingleStageDetector):
             # Shared-feature pose (old behavior)
             pose_losses = self.pose_head.loss(x, batch_data_samples)
         else:
-            rois, _ = self._build_pose_rois(det_results, topk=self.pose_topk)
+            rois, _ = self._build_pose_rois(
+                det_results, batch_data_samples, topk=self.pose_topk
+            )
             if rois.numel() == 0:
                 # no dets -> no pose loss
                 zero = x[0].sum() * 0
@@ -170,7 +174,9 @@ class RTMDetWithPose(SingleStageDetector):
             *outs, batch_img_metas=batch_img_metas, cfg=cfg, rescale=rescale
         )
 
-        rois, roi_map = self._build_pose_rois(det_results_pose, topk=self.pose_topk)
+        rois, roi_map = self._build_pose_rois(
+            det_results_pose, batch_data_samples, topk=self.pose_topk
+        )
         if rois.numel() == 0:
             self._attach_empty_pose(det_results_out)
             return det_results_out
@@ -182,7 +188,7 @@ class RTMDetWithPose(SingleStageDetector):
         self._attach_pose(det_results_out, roi_map, pose_kpts, pose_scores)
         return det_results_out
 
-    def _build_pose_rois(self, det_results, topk: int = 1):
+    def _build_pose_rois(self, det_results, batch_data_samples=None, topk: int = 1):
         """Build RoIs from det results and keep mapping to instances."""
         rois = []
         roi_map = []  # list of (img_idx, inst_idx)
@@ -195,6 +201,10 @@ class RTMDetWithPose(SingleStageDetector):
             if bboxes is None or bboxes.numel() == 0:
                 continue
 
+            meta = None
+            if batch_data_samples is not None and img_idx < len(batch_data_samples):
+                meta = getattr(batch_data_samples[img_idx], "metainfo", None)
+
             if hasattr(inst, 'scores') and inst.scores is not None:
                 order = torch.argsort(inst.scores, descending=True)
             else:
@@ -204,6 +214,31 @@ class RTMDetWithPose(SingleStageDetector):
                 order = order[:topk]
 
             bboxes = bboxes[order]
+            if bboxes.numel() == 0:
+                continue
+
+            # clamp to image bounds if available
+            if meta is not None:
+                img_shape = meta.get("img_shape", None)
+                if img_shape is not None:
+                    h, w = float(img_shape[0]), float(img_shape[1])
+                    bboxes = bboxes.clone()
+                    bboxes[:, 0].clamp_(0, w - 1.0)
+                    bboxes[:, 2].clamp_(0, w - 1.0)
+                    bboxes[:, 1].clamp_(0, h - 1.0)
+                    bboxes[:, 3].clamp_(0, h - 1.0)
+
+            # filter invalid boxes
+            valid = torch.isfinite(bboxes).all(dim=1)
+            ws = bboxes[:, 2] - bboxes[:, 0]
+            hs = bboxes[:, 3] - bboxes[:, 1]
+            valid = valid & (ws >= self.pose_min_box_size) & (hs >= self.pose_min_box_size)
+            if valid.any():
+                bboxes = bboxes[valid]
+                order = order[valid]
+            else:
+                continue
+
             if bboxes.numel() == 0:
                 continue
 
