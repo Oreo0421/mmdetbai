@@ -137,24 +137,11 @@ class RTMDetWithPose(SingleStageDetector):
             )
 
             # Pose prediction
-            pose_results = self.pose_head.predict(
-                x, batch_data_samples, rescale=rescale
+            results_list = self.pose_head.predict(
+                x, results_list, batch_data_samples, rescale=rescale
             )
 
-            # Merge detection and pose results
-            for i, (det_result, pose_result) in enumerate(
-                zip(results_list, pose_results)
-            ):
-                # Add keypoints to detection results
-                if hasattr(pose_result, 'pred_instances'):
-                    det_result.pred_instances.keypoints = (
-                        pose_result.pred_instances.keypoints
-                    )
-                    det_result.pred_instances.keypoint_scores = (
-                        pose_result.pred_instances.keypoint_scores
-                    )
-
-            return results_list
+            return self.add_pred_to_datasample(batch_data_samples, results_list)
 
         # --------- RoI-based pose path ---------
         batch_img_metas = [
@@ -179,14 +166,14 @@ class RTMDetWithPose(SingleStageDetector):
         )
         if rois.numel() == 0:
             self._attach_empty_pose(det_results_out)
-            return det_results_out
+            return self.add_pred_to_datasample(batch_data_samples, det_results_out)
 
         roi_feats = self.pose_roi_extractor(x, rois)
         pose_kpts, pose_scores = self.pose_head.predict(
             roi_feats, rois, batch_data_samples, rescale=rescale
         )
         self._attach_pose(det_results_out, roi_map, pose_kpts, pose_scores)
-        return det_results_out
+        return self.add_pred_to_datasample(batch_data_samples, det_results_out)
 
     def _build_pose_rois(self, det_results, batch_data_samples=None, topk: int = 1):
         """Build RoIs from det results and keep mapping to instances."""
