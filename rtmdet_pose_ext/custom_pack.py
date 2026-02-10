@@ -27,6 +27,25 @@ class PackDetInputsWithPose(PackDetInputs):
         # ---- restore pose gt fields onto data_sample (from results dict) ----
         if 'gt_keypoints' in results:
             kpts = results['gt_keypoints']
+        else:
+            kpts = None
+            if 'instances' in results and len(results['instances']) > 0:
+                # collect keypoints from instances if available
+                all_kpts = []
+                for inst in results['instances']:
+                    if 'keypoints' not in inst:
+                        continue
+                    kp = inst['keypoints']
+                    kp = np.asarray(kp, dtype=np.float32)
+                    if kp.ndim == 1:
+                        if kp.size % 3 != 0:
+                            continue
+                        kp = kp.reshape(-1, 3)
+                    all_kpts.append(kp)
+                if len(all_kpts) > 0:
+                    kpts = np.stack(all_kpts, axis=0)
+
+        if kpts is not None:
             if isinstance(kpts, np.ndarray):
                 kpts = torch.from_numpy(kpts)
             if torch.is_tensor(kpts):

@@ -17,21 +17,33 @@ model = dict(
         bbox_coder=dict(type='DistancePointBBoxCoder'),
         loss_cls=dict(type='QualityFocalLoss', use_sigmoid=True, beta=2.0, loss_weight=1.0),
         loss_bbox=dict(type='GIoULoss', loss_weight=2.0)),
+    pose_roi_extractor=dict(
+        type='SingleRoIExtractor',
+        roi_layer=dict(type='RoIAlign', output_size=48, sampling_ratio=0, aligned=True),
+        out_channels=96,
+        featmap_strides=[8, 16, 32]),
+    pose_det_cfg=dict(
+        nms_pre=4000,
+        score_thr=0.001,
+        nms=dict(type='nms', iou_threshold=0.6),
+        max_per_img=200),
+    pose_topk=200,
     pose_head=dict(
         type='HeatmapHead', num_keypoints=7, in_channels=96, feat_channels=128,
-        upsample_factor=2,  # <-- 新增：deconv 上采样 24→48
+        upsample_factor=1,
+        sigma=2.0,
+        match_iou_thr=0.1,
         loss_keypoint=dict(type='KeypointMSELoss', use_target_weight=True, loss_weight=2.0)),
     train_cfg=dict(assigner=dict(type='DynamicSoftLabelAssigner', topk=13), allowed_border=-1, pos_weight=-1, debug=False),
     test_cfg=dict(nms_pre=1000, score_thr=0.05, nms=dict(type='nms', iou_threshold=0.6), max_per_img=100))
 
 # ========= Pipeline =========
-# 热图尺寸 = 48x48，匹配 HeatmapHead 的 deconv 输出
+# ROI pose heatmap size = 48x48
 train_pipeline = [
     dict(type='LoadImageFromFile', _scope_='mmdet'),
     dict(type='LoadAnnotations', with_bbox=True, with_keypoints=True, _scope_='mmdet'),
     dict(type='Resize', scale=img_scale, keep_ratio=False, _scope_='mmdet'),
     dict(type='RandomFlip', prob=0.5, _scope_='mmdet'),
-    dict(type='GeneratePoseHeatmap', heatmap_size=(48, 48), sigma=2.0, _scope_='mmdet'),
     dict(type='PackDetInputsWithPose', _scope_='mmdet'),
 ]
 
@@ -39,7 +51,6 @@ test_pipeline = [
     dict(type='LoadImageFromFile', _scope_='mmdet'),
     dict(type='LoadAnnotations', with_bbox=True, with_keypoints=True, _scope_='mmdet'),
     dict(type='Resize', scale=img_scale, keep_ratio=False, _scope_='mmdet'),
-    dict(type='GeneratePoseHeatmap', heatmap_size=(48, 48), sigma=2.0, _scope_='mmdet'),
     dict(type='CopyImgIdToId', _scope_='mmdet'),
     dict(type='PackDetInputsWithPose', meta_keys=('id','img_id', 'img_path', 'ori_shape', 'img_shape', 'scale_factor'), _scope_='mmdet'),
 ]
