@@ -7,6 +7,7 @@ from mmdet.registry import MODELS
 from mmdet.structures import OptSampleList, SampleList
 from mmdet.utils import ConfigType, OptConfigType, OptMultiConfig
 from mmdet.models.detectors.single_stage import SingleStageDetector
+from mmdet.structures.bbox import get_box_tensor
 
 
 @MODELS.register_module(force=True)
@@ -39,6 +40,7 @@ class RTMDetWithPose(SingleStageDetector):
         pose_det_cfg: OptConfigType = None,
         pose_topk: int = 1,
         pose_min_box_size: float = 2.0,
+        pose_use_gt_box: bool = True,
         train_cfg: OptConfigType = None,
         test_cfg: OptConfigType = None,
         data_preprocessor: OptConfigType = None,
@@ -64,6 +66,7 @@ class RTMDetWithPose(SingleStageDetector):
         self.pose_det_cfg = pose_det_cfg
         self.pose_topk = pose_topk
         self.pose_min_box_size = float(pose_min_box_size)
+        self.pose_use_gt_box = bool(pose_use_gt_box)
     
     def loss(self, batch_inputs: Tensor, batch_data_samples: SampleList) -> dict:
         """Calculate detection + pose estimation losses.
@@ -84,10 +87,14 @@ class RTMDetWithPose(SingleStageDetector):
         losses = dict()
 
         # 1. Detection losses (bbox + classification)
-        #    Also get det predictions to build pose RoIs (if enabled)
-        det_losses, det_results = self.bbox_head.loss_and_predict(
-            x, batch_data_samples, proposal_cfg=self.pose_det_cfg
-        )
+        if self.pose_roi_extractor is None or self.pose_use_gt_box:
+            det_losses = self.bbox_head.loss(x, batch_data_samples)
+            det_results = None
+        else:
+            # Also get det predictions to build pose RoIs (if enabled)
+            det_losses, det_results = self.bbox_head.loss_and_predict(
+                x, batch_data_samples, proposal_cfg=self.pose_det_cfg
+            )
         losses.update(det_losses)
 
         # 2. Pose estimation losses
@@ -95,9 +102,12 @@ class RTMDetWithPose(SingleStageDetector):
             # Shared-feature pose (old behavior)
             pose_losses = self.pose_head.loss(x, batch_data_samples)
         else:
-            rois, _ = self._build_pose_rois(
-                det_results, batch_data_samples, topk=self.pose_topk
-            )
+            if self.pose_use_gt_box:
+                rois = self._build_gt_rois(batch_data_samples)
+            else:
+                rois, _ = self._build_pose_rois(
+                    det_results, batch_data_samples, topk=self.pose_topk
+                )
             if rois.numel() == 0:
                 # no dets -> no pose loss
                 zero = x[0].sum() * 0
@@ -248,6 +258,55 @@ class RTMDetWithPose(SingleStageDetector):
 
         rois = torch.cat(rois, dim=0)
         return rois, roi_map
+
+    def _build_gt_rois(self, batch_data_samples):
+        """Build RoIs from GT boxes for training pose head."""
+        rois = []
+        for img_idx, ds in enumerate(batch_data_samples):
+            gt_instances = getattr(ds, "gt_instances", None)
+            if gt_instances is None or len(gt_instances) == 0:
+                continue
+
+            bboxes = getattr(gt_instances, "bboxes", None)
+            if bboxes is None or len(bboxes) == 0:
+                continue
+
+            bboxes = get_box_tensor(bboxes)
+            bboxes = bboxes.to(dtype=torch.float32)
+            if bboxes.numel() == 0:
+                continue
+
+            meta = getattr(ds, "metainfo", None)
+            if meta is not None:
+                img_shape = meta.get("img_shape", None)
+                if img_shape is not None:
+                    h, w = float(img_shape[0]), float(img_shape[1])
+                    bboxes = bboxes.clone()
+                    bboxes[:, 0].clamp_(0, w - 1.0)
+                    bboxes[:, 2].clamp_(0, w - 1.0)
+                    bboxes[:, 1].clamp_(0, h - 1.0)
+                    bboxes[:, 3].clamp_(0, h - 1.0)
+
+            valid = torch.isfinite(bboxes).all(dim=1)
+            ws = bboxes[:, 2] - bboxes[:, 0]
+            hs = bboxes[:, 3] - bboxes[:, 1]
+            valid = valid & (ws >= self.pose_min_box_size) & (hs >= self.pose_min_box_size)
+            if not valid.any():
+                continue
+
+            bboxes = bboxes[valid]
+            batch_inds = bboxes.new_full((bboxes.size(0), 1), img_idx)
+            rois.append(torch.cat([batch_inds, bboxes], dim=1))
+
+        if len(rois) == 0:
+            device = None
+            if len(batch_data_samples) > 0:
+                device = batch_data_samples[0].gt_instances.bboxes.device
+            if device is None:
+                device = torch.device('cpu')
+            return torch.zeros((0, 5), device=device)
+
+        return torch.cat(rois, dim=0)
 
     def _attach_empty_pose(self, det_results):
         """Attach empty keypoints to det results when no RoIs exist."""

@@ -28,6 +28,7 @@ model = dict(
         nms=dict(type='nms', iou_threshold=0.6),
         max_per_img=200),
     pose_topk=200,
+    pose_use_gt_box=True,
     pose_head=dict(
         type='HeatmapHead', num_keypoints=7, in_channels=96, feat_channels=128,
         upsample_factor=1,
