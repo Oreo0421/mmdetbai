@@ -33,6 +33,8 @@ model = dict(
         upsample_factor=1,
         sigma=2.0,
         match_iou_thr=0.1,
+        log_stats=True,
+        log_interval=20,
         loss_keypoint=dict(type='KeypointMSELoss', use_target_weight=True, loss_weight=2.0)),
     train_cfg=dict(assigner=dict(type='DynamicSoftLabelAssigner', topk=13), allowed_border=-1, pos_weight=-1, debug=False),
     test_cfg=dict(nms_pre=1000, score_thr=0.05, nms=dict(type='nms', iou_threshold=0.6), max_per_img=100))

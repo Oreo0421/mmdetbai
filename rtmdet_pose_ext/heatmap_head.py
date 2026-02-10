@@ -14,6 +14,7 @@ import torch.nn.functional as F
 from torch import Tensor
 
 from mmengine.structures import InstanceData
+from mmengine.logging import MMLogger
 from mmdet.registry import MODELS
 from mmdet.structures.bbox import bbox_overlaps, get_box_tensor
 
@@ -39,12 +40,17 @@ class HeatmapHead(nn.Module):
         upsample_factor: int = 2,      # 上采样倍率，1=不上采样，2=deconv 2x
         sigma: float = 2.0,
         match_iou_thr: float = 0.1,
+        log_stats: bool = False,
+        log_interval: int = 20,
     ):
         super().__init__()
         self.num_keypoints = num_keypoints
         self.upsample_factor = upsample_factor
         self.sigma = sigma
         self.match_iou_thr = match_iou_thr
+        self.log_stats = log_stats
+        self.log_interval = int(log_interval)
+        self._stat_iter = 0
 
         # Feature extraction
         self.conv1 = nn.Conv2d(in_channels, feat_channels, kernel_size=3, padding=1)
@@ -320,6 +326,7 @@ class HeatmapHead(nn.Module):
     ) -> Tuple[Tensor, Tensor]:
         """Build ROI heatmap targets from GT keypoints using IoU matching."""
         num_rois = rois.size(0)
+        matched = 0
         K = self.num_keypoints
         H, W = heatmap_size
 
@@ -375,6 +382,10 @@ class HeatmapHead(nn.Module):
 
             kpts = kpts[int(gt_idx.item())]
             kpts = self._map_keypoints_to_img(kpts, meta)
+            if kpts.size(0) > 0:
+                vis = kpts[:, 2] > 0
+                if torch.any(vis):
+                    matched += 1
 
             x1, y1, x2, y2 = rois[i, 1:].tolist()
             roi_w = max(x2 - x1, 1.0)
@@ -395,6 +406,13 @@ class HeatmapHead(nn.Module):
                         H, W, hm_x_int, hm_y_int, device=device, dtype=dtype
                     )
                     target_weights[i, k] = 1.0
+
+        self._stat_iter += 1
+        if self.log_stats:
+            interval = max(1, self.log_interval)
+            if self._stat_iter % interval == 0:
+                logger = MMLogger.get_current_instance()
+                logger.info(f"pose_roi_stats: total={num_rois} matched={matched}")
 
         return gt_heatmaps, target_weights
 
