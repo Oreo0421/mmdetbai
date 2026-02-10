@@ -1,0 +1,36 @@
+import torch
+import numpy as np
+from mmdet.registry import TRANSFORMS
+from mmdet.datasets.transforms import PackDetInputs
+
+
+@TRANSFORMS.register_module(force=True)
+class PackDetInputsWithPose(PackDetInputs):
+    """扩展 PackDetInputs 以支持关键点热图
+    
+    热图存储在 data_samples 级别，而不是 gt_instances 级别
+    因为 InstanceData 要求所有属性长度一致（实例数量）
+    
+    存储位置:
+    - data_samples.gt_keypoints: 关键点坐标 (num_kpts, 3)
+    - data_samples.gt_keypoints_heatmap: 关键点热图 (num_kpts, H, W)
+    """
+    
+    def transform(self, results: dict) -> dict:
+        packed = super().transform(results)
+        data_samples = packed['data_samples']
+        
+        # 存储到 data_samples 级别（不是 gt_instances）
+        if 'gt_keypoints_heatmap' in results:
+            heatmap = results['gt_keypoints_heatmap']
+            if isinstance(heatmap, np.ndarray):
+                heatmap = torch.from_numpy(heatmap)
+            data_samples.gt_keypoints_heatmap = heatmap
+            
+        if 'gt_keypoints' in results:
+            kpts = results['gt_keypoints']
+            if isinstance(kpts, np.ndarray):
+                kpts = torch.from_numpy(kpts)
+            data_samples.gt_keypoints = kpts
+        
+        return packed

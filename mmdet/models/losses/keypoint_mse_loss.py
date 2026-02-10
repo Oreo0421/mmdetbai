@@ -1,5 +1,3 @@
-# mmdet/models/losses/keypoint_mse_loss.py
-
 import torch
 import torch.nn as nn
 from mmdet.registry import MODELS
@@ -7,19 +5,36 @@ from mmdet.registry import MODELS
 
 @MODELS.register_module()
 class KeypointMSELoss(nn.Module):
-    """MSE Loss for Keypoint Heatmaps."""
+    """Keypoint MSE Loss with proper dimension handling"""
     
-    def __init__(self, use_target_weight=True, loss_weight=1.0):
+    def __init__(self, use_target_weight: bool = True, loss_weight: float = 1.0):
         super().__init__()
         self.use_target_weight = use_target_weight
         self.loss_weight = loss_weight
-        self.criterion = nn.MSELoss(reduction='mean')
+        self.criterion = nn.MSELoss(reduction='none')
     
-    def forward(self, pred, target, target_weight=None):
-        if self.use_target_weight and target_weight is not None:
-            # target_weight: (B, num_keypoints, 1, 1)
-            pred = pred * target_weight
-            target = target * target_weight
+    def forward(self, pred: torch.Tensor, target: torch.Tensor, 
+                target_weight: torch.Tensor = None) -> torch.Tensor:
+        """
+        Args:
+            pred: (B, K, H, W) 预测热图
+            target: (B, K, H, W) 目标热图
+            target_weight: (B, K) 关键点权重
+        Returns:
+            loss: scalar
+        """
+        B, K, H, W = pred.shape
         
-        loss = self.criterion(pred, target)
+        # 计算 MSE loss
+        loss = self.criterion(pred, target)  # (B, K, H, W)
+        
+        # 应用关键点权重
+        if self.use_target_weight and target_weight is not None:
+            # 扩展 target_weight 维度: (B, K) -> (B, K, 1, 1)
+            target_weight = target_weight.view(B, K, 1, 1)
+            loss = loss * target_weight
+        
+        # 计算平均 loss
+        loss = loss.mean()
+        
         return loss * self.loss_weight

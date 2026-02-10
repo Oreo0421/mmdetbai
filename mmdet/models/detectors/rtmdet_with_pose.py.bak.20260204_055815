@@ -1,0 +1,51 @@
+from typing import Dict, Tuple, List
+import torch
+from torch import Tensor
+
+from mmdet.registry import MODELS
+from mmdet.models.detectors import RTMDet
+from mmdet.structures import SampleList
+
+
+@MODELS.register_module()
+class RTMDetWithPose(RTMDet):
+    """RTMDet with Pose estimation head"""
+    
+    def __init__(self, *args, pose_head=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        if pose_head is not None:
+            self.pose_head = MODELS.build(pose_head)
+        else:
+            self.pose_head = None
+    
+    def loss(self, batch_inputs: Tensor, batch_data_samples: SampleList) -> dict:
+        """Calculate losses"""
+        # Get features
+        x = self.extract_feat(batch_inputs)
+        
+        # Detection losses
+        losses = self.bbox_head.loss(x, batch_data_samples)
+        
+        # Pose losses
+        if self.pose_head is not None:
+            pose_losses = self.pose_head.loss(x, batch_data_samples)
+            losses.update(pose_losses)
+        
+        return losses
+    
+    def predict(self, batch_inputs: Tensor, batch_data_samples: SampleList, 
+                rescale: bool = True) -> SampleList:
+        """Predict detection and pose"""
+        # Get features
+        x = self.extract_feat(batch_inputs)
+        
+        # Detection predictions
+        results = self.bbox_head.predict(x, batch_data_samples, rescale=rescale)
+        
+        # Pose predictions
+        if self.pose_head is not None:
+            # pose_head.predict 会直接修改 batch_data_samples
+            self.pose_head.predict(x, results, rescale=rescale)
+        
+        return results

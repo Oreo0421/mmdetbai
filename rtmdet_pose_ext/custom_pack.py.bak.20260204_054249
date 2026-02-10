@@ -1,0 +1,76 @@
+import numpy as np
+import torch
+
+from mmdet.registry import TRANSFORMS
+from mmdet.datasets.transforms import PackDetInputs
+
+
+@TRANSFORMS.register_module(force=True)
+class PackDetInputsWithPose(PackDetInputs):
+    """PackDetInputs + mirror pose gt into gt_instances.
+
+    After packing, we ensure:
+      - data_sample.gt_keypoints exists (from previous transforms)
+      - data_sample.gt_instances exists (from PackDetInputs)
+      - if possible, also write data_sample.gt_instances.keypoints with
+        consistent length N == len(gt_instances)
+    """
+
+    def transform(self, results: dict) -> dict:
+        packed = super().transform(results)
+
+        # packed contains 'data_samples' (DetDataSample)
+        data_sample = packed.get('data_samples', None)
+        if data_sample is None:
+            return packed
+
+        # If there is no gt_instances, nothing to mirror to
+        if not hasattr(data_sample, 'gt_instances') or data_sample.gt_instances is None:
+            return packed
+
+        gt_instances = data_sample.gt_instances
+        N = len(gt_instances)
+
+        # If there is no gt_keypoints on data_sample, we can't mirror
+        if not hasattr(data_sample, 'gt_keypoints'):
+            return packed
+
+        kpts = data_sample.gt_keypoints
+
+        # Convert numpy -> torch
+        if isinstance(kpts, np.ndarray):
+            kpts = torch.from_numpy(kpts)
+
+        # Ensure float tensor
+        if torch.is_tensor(kpts):
+            kpts = kpts.float()
+        else:
+            # unexpected type, just skip
+            return packed
+
+        # Expected common shapes:
+        #  (K,3) or (K,2) for single instance
+        #  (N,K,3) or (N,K,2) for multi instance
+        if kpts.dim() == 2:
+            kpts = kpts.unsqueeze(0)  # -> (1,K,D)
+
+        # If no bboxes (N==0), keep an empty keypoints field (0,K,D) for consistency
+        if N == 0:
+            # determine K and D from kpts
+            K = kpts.size(1)
+            D = kpts.size(2)
+            gt_instances.keypoints = kpts.new_zeros((0, K, D))
+            return packed
+
+        # Align number of instances to N
+        if kpts.size(0) != N:
+            if kpts.size(0) > N:
+                kpts = kpts[:N]
+            else:
+                # repeat first instance to match N (best-effort)
+                kpts = kpts[:1].repeat(N, 1, 1)
+
+        # Finally, mirror into gt_instances
+        gt_instances.keypoints = kpts
+
+        return packed

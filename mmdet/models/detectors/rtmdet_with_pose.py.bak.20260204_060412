@@ -72,7 +72,7 @@ class RTMDetWithPose(RTMDet):
                 bbox_instances.append(InstanceData())
 
         # 4) Run pose head (writes keypoints/keypoint_scores into InstanceData)
-        self.pose_head.predict(feats, bbox_instances,batch_data_samples=data_samples, rescale=rescale)
+        self.pose_head.predict(feats, bbox_instances, rescale=rescale)
 
         # 5) Write back
         for ds, inst in zip(data_samples, bbox_instances):

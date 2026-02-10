@@ -34,6 +34,9 @@ from .voc import VOCDataset
 from .wider_face import WIDERFaceDataset
 from .xml_style import XMLDataset
 from .youtube_vis_dataset import YouTubeVISDataset
+from .loading_with_keypoints import LoadAnnotationsWithKeypoints  # noqa: F401
+from .generate_keypoint_heatmap import GenerateKeypointHeatmap  # noqa: F401
+from .pack_det_inputs_pose import PackDetInputsWithPose  # noqa: F401
 
 __all__ = [
     'XMLDataset', 'CocoDataset', 'DeepFashionDataset', 'VOCDataset',

@@ -1,0 +1,57 @@
+from typing import List, Optional
+
+import torch
+from mmengine.structures import InstanceData
+
+from mmdet.registry import MODELS
+from mmdet.structures import SampleList
+
+# RTMDet base may live in different module paths depending on mmdet version
+try:
+    from mmdet.models.detectors.rtmdet import RTMDet
+except Exception:
+    from mmdet.models.detectors import RTMDet
+
+
+@MODELS.register_module(force=True)
+class RTMDetWithPose(RTMDet):
+    """RTMDet detector with an extra pose_head.
+
+    Critical behavior:
+      - Return List[DetDataSample] so evaluators (CocoMetric) can access
+        data_sample['pred_instances'] / data_sample.pred_instances.
+      - Write keypoints/keypoint_scores into each data_sample.pred_instances.
+    """
+
+    def __init__(self, *args, pose_head=None, **kwargs):
+        super().__init__(*args, **kwargs)
+        assert pose_head is not None, "pose_head must be provided in config"
+        self.pose_head = MODELS.build(pose_head)
+
+    @torch.no_grad()
+    def predict(self,
+                batch_inputs: torch.Tensor,
+                batch_data_samples: Optional[SampleList] = None,
+                rescale: bool = True) -> SampleList:
+        # 1) Get bbox results in standard format (DetDataSample list)
+        data_samples = super().predict(batch_inputs, batch_data_samples, rescale=rescale)
+
+        # 2) Extract features once
+        feats = self.extract_feat(batch_inputs)
+
+        # 3) Collect InstanceData from each sample (bbox predictions)
+        bbox_instances: List[InstanceData] = []
+        for ds in data_samples:
+            if hasattr(ds, 'pred_instances') and ds.pred_instances is not None:
+                bbox_instances.append(ds.pred_instances)
+            else:
+                bbox_instances.append(InstanceData())
+
+        # 4) Run pose head; it writes keypoints into InstanceData objects
+        self.pose_head.predict(feats, bbox_instances, rescale=rescale)
+
+        # 5) Write back to each DetDataSample.pred_instances
+        for ds, inst in zip(data_samples, bbox_instances):
+            ds.pred_instances = inst
+
+        return data_samples

@@ -1,0 +1,183 @@
+from typing import Tuple
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+from torch import Tensor
+
+from mmdet.registry import MODELS
+from mmdet.structures import SampleList
+from mmdet.utils import ConfigType
+from mmengine.structures import InstanceData
+
+
+@MODELS.register_module(force=True)
+class HeatmapHead(nn.Module):
+    """Heatmap Pose Head for keypoints."""
+
+    def __init__(
+        self,
+        num_keypoints: int = 7,
+        in_channels: int = 96,
+        feat_channels: int = 128,
+        loss_keypoint: ConfigType = dict(
+            type='KeypointMSELoss',
+            use_target_weight=True,
+            loss_weight=1.0,
+        ),
+    ):
+        super().__init__()
+
+        self.num_keypoints = num_keypoints
+        self.in_channels = in_channels
+        self.feat_channels = feat_channels
+
+        self.conv_layers = nn.Sequential(
+            nn.Conv2d(in_channels, feat_channels, 3, padding=1),
+            nn.BatchNorm2d(feat_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(feat_channels, feat_channels, 3, padding=1),
+            nn.BatchNorm2d(feat_channels),
+            nn.ReLU(inplace=True),
+        )
+
+        self.deconv = nn.ConvTranspose2d(
+            feat_channels, 64,
+            kernel_size=4, stride=2, padding=1, bias=False
+        )
+        self.deconv_bn = nn.BatchNorm2d(64)
+        self.deconv_relu = nn.ReLU(inplace=True)
+
+        self.pred_layer = nn.Conv2d(64, num_keypoints, kernel_size=1, stride=1, padding=0)
+
+        self.loss_keypoint = MODELS.build(loss_keypoint)
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.normal_(m.weight, std=0.001)
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.ConvTranspose2d):
+                nn.init.normal_(m.weight, std=0.001)
+
+    def forward(self, feats: Tuple[Tensor]) -> Tensor:
+        x = feats[0]
+        x = self.conv_layers(x)
+        x = self.deconv(x)
+        x = self.deconv_bn(x)
+        x = self.deconv_relu(x)
+        heatmaps = self.pred_layer(x)
+        return heatmaps
+
+    def loss(self, feats: Tuple[Tensor], batch_data_samples: SampleList) -> dict:
+        heatmaps = self.forward(feats)
+
+        gt_heatmaps = []
+        keypoint_weights = []
+
+        for data_sample in batch_data_samples:
+            if hasattr(data_sample, 'gt_keypoints_heatmap'):
+                gt_heatmaps.append(data_sample.gt_keypoints_heatmap)
+
+                if hasattr(data_sample, 'gt_keypoints'):
+                    kpts = data_sample.gt_keypoints
+                    weights = (kpts[:, 2] > 0).float()
+                    keypoint_weights.append(weights)
+                else:
+                    keypoint_weights.append(
+                        torch.ones(self.num_keypoints, device=heatmaps.device)
+                    )
+
+        if len(gt_heatmaps) == 0:
+            return dict(loss_keypoint=heatmaps.sum() * 0.0)
+
+        gt_heatmaps = torch.stack(gt_heatmaps).to(heatmaps.device)
+        keypoint_weights = torch.stack(keypoint_weights).to(heatmaps.device)
+
+        if gt_heatmaps.shape[-2:] != heatmaps.shape[-2:]:
+            gt_heatmaps = F.interpolate(
+                gt_heatmaps,
+                size=heatmaps.shape[-2:],
+                mode='bilinear',
+                align_corners=True
+            )
+
+        loss_kpt = self.loss_keypoint(heatmaps, gt_heatmaps, keypoint_weights)
+        return dict(loss_keypoint=loss_kpt)
+
+    @torch.no_grad()
+    def predict(self,
+                feats: Tuple[Tensor],
+                batch_data_samples: SampleList,
+                rescale: bool = True) -> SampleList:
+        """Predict keypoints and write them into data_sample.pred_instances
+        with consistent length (N) to avoid InstanceData length assertion.
+        """
+        heatmaps = self.forward(feats)  # [B, K, H, W]
+        batch_keypoints, batch_scores = self._decode_heatmap(heatmaps)  # [B, K, 2], [B, K]
+
+        for i, data_sample in enumerate(batch_data_samples):
+            keypoints = batch_keypoints[i]  # [K, 2]
+            scores = batch_scores[i]        # [K]
+
+            # 取 detector 的 pred_instances（一般已经包含 bboxes/scores/labels）
+            pred = getattr(data_sample, 'pred_instances', None)
+            if pred is None:
+                pred = InstanceData()
+
+            # 关键：N 必须与 pred_instances 的长度一致
+            N = len(pred)
+
+            if N == 0:
+                # 没有检测到实例：写入空张量（0, K, 2）/（0, K）
+                pred.keypoints = keypoints.new_zeros((0, self.num_keypoints, 2))
+                pred.keypoint_scores = scores.new_zeros((0, self.num_keypoints))
+                data_sample.pred_instances = pred
+                continue
+
+            # 将 (K,2) 扩展为 (N,K,2)，(K) 扩展为 (N,K)
+            kp = keypoints.unsqueeze(0).repeat(N, 1, 1)         # [N, K, 2]
+            sc = scores.unsqueeze(0).repeat(N, 1)               # [N, K]
+
+            # 若需要 rescale，按图片的 scale_factor 回到原图坐标
+            if rescale and hasattr(data_sample, 'scale_factor') and data_sample.scale_factor is not None:
+                sf = data_sample.scale_factor
+                # 兼容 list/tuple/ndarray/tensor
+                if not torch.is_tensor(sf):
+                    sf = torch.tensor(sf, device=kp.device, dtype=kp.dtype)
+                # sf 形如 (w, h, w, h) 或 (w, h)
+                sx = sf[0]
+                sy = sf[1]
+                kp[..., 0] = kp[..., 0] / sx
+                kp[..., 1] = kp[..., 1] / sy
+
+            # 写入 pred_instances：长度必须为 N（与 pred 一致）
+            pred.keypoints = kp
+            pred.keypoint_scores = sc
+            print("N=", N, "kp_shape=", tuple(pred.keypoints.shape),
+                  "kp_minmax=", float(pred.keypoints.min()), float(pred.keypoints.max()),
+                  "score_max=", float(pred.keypoint_scores.max()))
+            data_sample.pred_instances = pred
+
+        return batch_data_samples
+
+    def _decode_heatmap(self, heatmaps: Tensor) -> Tuple[Tensor, Tensor]:
+        """Decode heatmaps to (x,y) with a fixed stride factor."""
+        B, K, H, W = heatmaps.shape
+        heatmaps_flat = heatmaps.view(B, K, -1)
+        scores, indices = heatmaps_flat.max(dim=2)   # [B, K]
+        scores = torch.sigmoid(scores)
+
+        y = (indices // W).float()
+        x = (indices % W).float()
+
+        # 注意：这里的 4 是你当前网络输出相对输入的 stride（按你的实现保留）
+        x = x * 4
+        y = y * 4
+
+        keypoints = torch.stack([x, y], dim=2)       # [B, K, 2]
+        return keypoints, scores
