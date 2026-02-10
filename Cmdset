@@ -1,0 +1,20 @@
+bai
+
+/home/tbai/mmdetection/mmdetection/rtmdet_pose_ext
+/home/tbai/baimmdet
+
+python tools/train.py rtmdet_pose_clean.py --work-dir work_dirs/rtmdet_pose_0210/
+
+python tools/test.py rtmdet_pose_clean.py /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_0206/best_coco_bbox_mAP_epoch_29.pth 
+
+
+
+python inference.py \
+    --config /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_clean/rtmdet_pose_clean.py \
+    --checkpoint /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_0206/best_coco_bbox_mAP_epoch_29.pth \
+    --input /home/tbai/Desktop/SenIRDatasetProcessed/1A-2\ Walking/AAG/stitched_png \
+    --output /home/tbai/Desktop/results0207/ \
+    --det-thr 0.1 \
+    --kpt-thr 0.1 \
+    --radius 1 
+    
