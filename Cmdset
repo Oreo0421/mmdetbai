@@ -31,23 +31,21 @@ python pose_infer/inference.py \
     --kpt-thr 0.1 \
     --radius 1 
     
+pipeline :
+The image is processed through a Backbone and Neck to obtain FPN features [P3, P4, P5]. Then, RTMDetHead is used to predict the bounding box (x1, y1, x2, y2). In RoIAlign, the features are clipped from the FPN using the four corners of the bounding box, resulting in a 48×48 feature map. Next, HeatmapHead is used to predict heatmaps, obtaining 7 keypoints, resulting in 96×96 heat maps. Finally, these are decoded and mapped back to the image's coordinate system.
 
 
 
-
-  mApAverage Precision (AP) @[    IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.429                                                                                                                            
-  Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ]=0.750                                                                                                
-   Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] =  0.351                                                                                                
-   Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] =  0.000                                                                                            
-   Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = -1.000                                                                                                
-   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.461                                                                                                
-   Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] =  0.776                                                                                                
-   Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] =  0.391                                                                                                
-   Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] =  0.000                                                                                            
-   Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = -1.000                                                                                            
-  02/11 00:20:15 - mmengine - INFO - Epoch(test) [1194/1194]    coco/bbox_mAP: 0.8740  coco/bbox_mAP_50: 0.9840  coco/bbox_mAP_75: 0.9400  coco/bbox_mAP_s: 0.8740            
-  coco/bbox_mAP_m: 0.8080  coco/bbox_mAP_l: -1.0000  coco/AP: 0.4295  coco/AP .5: 0.7495  coco/AP .75: 0.3514  coco/AP (M): 0.0000  coco/AP (L): -1.0000  coco/AR: 0.4606     
-  coco/AR .5: 0.7763  coco/AR .75: 0.3908  coco/AR (M): 0.0000  coco/AR (L): -1.0000  data_time: 0.0020  time: 0.3093
-
+Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.553
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ] =  0.819
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] =  0.458
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] =  0.000
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = -1.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.573
+ Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] =  0.831
+ Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] =  0.494
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] =  0.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = -1.000
+02/11 13:20:25 - mmengine - INFO - Epoch(test) [1194/1194]    coco/bbox_mAP: 0.8870  coco/bbox_mAP_50: 0.9810  coco/bbox_mAP_75: 0.9480  coco/bbox_mAP_s: 0.8870  coco/bbox_mAP_m: 0.8220  coco/bbox_mAP_l: -1.0000  coco/AP: 0.5525  coco/AP .5: 0.8187  coco/AP .75: 0.4585  coco/AP (M): 0.0000  coco/AP (L): -1.0000  coco/AR: 0.5735  coco/AR .5: 0.8311  coco/AR .75: 0.4943  coco/AR (M): 0.0000  coco/AR (L): -1.0000  data_time: 0.0020  time: 0.1327
 
 
