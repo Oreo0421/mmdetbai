@@ -27,7 +27,7 @@ model = dict(
         score_thr=0.001,
         nms=dict(type='nms', iou_threshold=0.6),
         max_per_img=200),
-    pose_topk=200,
+    pose_topk=50,  # 200太多，每张图最多50个RoI足够
     pose_use_gt_box=False,  # 用检测框训练pose，减小训练-测试gap
     pose_head=dict(
         type='HeatmapHead', num_keypoints=7, in_channels=96, feat_channels=128,
@@ -68,7 +68,7 @@ custom_metainfo = dict(
 )
 
 train_dataloader = dict(
-    batch_size=8, num_workers=4, persistent_workers=True, sampler=dict(type='DefaultSampler', shuffle=True),
+    batch_size=4, num_workers=4, persistent_workers=True, sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(type='CocoPoseDataset', data_root=data_root, metainfo=custom_metainfo,
                  ann_file='annotations/instances_train.json', data_prefix=dict(img=''),
                  filter_cfg=dict(filter_empty_gt=True, min_size=1), pipeline=train_pipeline))
