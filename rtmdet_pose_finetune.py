@@ -38,7 +38,7 @@ model = dict(
         log_interval=20,
         loss_keypoint=dict(type='KeypointMSELoss', use_target_weight=True, loss_weight=5.0)),
     train_cfg=dict(assigner=dict(type='DynamicSoftLabelAssigner', topk=13), allowed_border=-1, pos_weight=-1, debug=False),
-    test_cfg=dict(nms_pre=1000, score_thr=0.05, nms=dict(type='nms', iou_threshold=0.6), max_per_img=100))
+    test_cfg=dict(nms_pre=1000, score_thr=0.3, nms=dict(type='nms', iou_threshold=0.45), max_per_img=100))
 
 # ========= Pipeline =========
 train_pipeline = [
