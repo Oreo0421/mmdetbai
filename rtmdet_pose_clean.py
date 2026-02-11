@@ -4,7 +4,7 @@ default_scope = 'mmdet'
 data_root = '/home/tbai/Desktop/sensir_coco/'
 num_classes = 1
 img_scale = (256, 256)  # 192太小，提升分辨率对pose精度帮助最大
-max_epochs = 50  # 30轮不够，pose需要更长训练
+max_epochs = 80  # 继续训练到80轮
 
 model = dict(
     type='RTMDetWithPose',
