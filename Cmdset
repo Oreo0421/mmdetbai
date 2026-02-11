@@ -4,7 +4,7 @@ path:
 /home/tbai/baimmdet
 
 训练cmd
-python tools/train.py rtmdet_pose_clean.py --work-dir work_dirs/rtmdet_pose_0210/
+python tools/train.py rtmdet_pose_clean.py --work-dir work_dirs/rtmdet_pose_0211/
 
 如果遇到gpu崩溃，mikro这个电脑老崩
 使用：
@@ -12,18 +12,41 @@ python tools/train.py rtmdet_pose_clean.py \
   --work-dir work_dirs/rtmdet_pose_0206/ \
   --resume
 
+微调
+python tools/train.py rtmdet_pose_finetune.py --work-dir work_dirs/rtmdet_pose_finetune/
+
+qQ947425517.
+
+python tools/test.py rtmdet_pose_clean.py /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_0211/best_coco_bbox_mAP_epoch_48.pth
 
 
-python tools/test.py rtmdet_pose_clean.py /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_0210/best_coco_bbox_mAP_epoch_29.pth 
 
-
-
-python inference.py \
+python pose_infer/inference.py \
     --config /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_clean/rtmdet_pose_clean.py \
-    --checkpoint /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_0210/best_coco_bbox_mAP_epoch_29.pth \
+    --checkpoint /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_0211/best_coco_bbox_mAP_epoch_48.pth \
     --input /home/tbai/Desktop/SenIRDatasetProcessed/1A-2\ Walking/AAG/stitched_png \
-    --output /home/tbai/Desktop/results0210/ \
+    --output /home/tbai/Desktop/results0211/ \
     --det-thr 0.1 \
     --kpt-thr 0.1 \
     --radius 1 
     
+
+
+
+
+  mApAverage Precision (AP) @[    IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.429                                                                                                                            
+  Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ]=0.750                                                                                                
+   Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] =  0.351                                                                                                
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] =  0.000                                                                                            
+   Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = -1.000                                                                                                
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.461                                                                                                
+   Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] =  0.776                                                                                                
+   Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] =  0.391                                                                                                
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] =  0.000                                                                                            
+   Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = -1.000                                                                                            
+  02/11 00:20:15 - mmengine - INFO - Epoch(test) [1194/1194]    coco/bbox_mAP: 0.8740  coco/bbox_mAP_50: 0.9840  coco/bbox_mAP_75: 0.9400  coco/bbox_mAP_s: 0.8740            
+  coco/bbox_mAP_m: 0.8080  coco/bbox_mAP_l: -1.0000  coco/AP: 0.4295  coco/AP .5: 0.7495  coco/AP .75: 0.3514  coco/AP (M): 0.0000  coco/AP (L): -1.0000  coco/AR: 0.4606     
+  coco/AR .5: 0.7763  coco/AR .75: 0.3908  coco/AR (M): 0.0000  coco/AR (L): -1.0000  data_time: 0.0020  time: 0.3093
+
+
+
