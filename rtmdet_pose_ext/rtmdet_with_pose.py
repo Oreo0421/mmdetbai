@@ -260,7 +260,11 @@ class RTMDetWithPose(SingleStageDetector):
         return rois, roi_map
 
     def _build_gt_rois(self, batch_data_samples):
-        """Build RoIs from GT boxes for training pose head."""
+        """Build RoIs from GT boxes for training pose head.
+
+        Adds random jitter (±10% of box size) to GT boxes during training
+        to reduce the gap between GT boxes and predicted boxes at test time.
+        """
         rois = []
         for img_idx, ds in enumerate(batch_data_samples):
             gt_instances = getattr(ds, "gt_instances", None)
@@ -275,6 +279,17 @@ class RTMDetWithPose(SingleStageDetector):
             bboxes = bboxes.to(dtype=torch.float32)
             if bboxes.numel() == 0:
                 continue
+
+            # 对GT框加随机扰动，模拟检测框偏移，减小训练-测试gap
+            if self.training:
+                bboxes = bboxes.clone()
+                ws = (bboxes[:, 2] - bboxes[:, 0]).clamp(min=1.0)
+                hs = (bboxes[:, 3] - bboxes[:, 1]).clamp(min=1.0)
+                noise = torch.randn(bboxes.size(0), 4, device=bboxes.device) * 0.1
+                bboxes[:, 0] += noise[:, 0] * ws
+                bboxes[:, 1] += noise[:, 1] * hs
+                bboxes[:, 2] += noise[:, 2] * ws
+                bboxes[:, 3] += noise[:, 3] * hs
 
             meta = getattr(ds, "metainfo", None)
             if meta is not None:

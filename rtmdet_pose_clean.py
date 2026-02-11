@@ -4,7 +4,7 @@ default_scope = 'mmdet'
 data_root = '/home/tbai/Desktop/sensir_coco/'
 num_classes = 1
 img_scale = (256, 256)  # 192太小，提升分辨率对pose精度帮助最大
-max_epochs = 100  # 30轮不够，pose需要更长训练
+max_epochs = 50  # 30轮不够，pose需要更长训练
 
 model = dict(
     type='RTMDetWithPose',
@@ -28,7 +28,7 @@ model = dict(
         nms=dict(type='nms', iou_threshold=0.6),
         max_per_img=200),
     pose_topk=50,  # 200太多，每张图最多50个RoI足够
-    pose_use_gt_box=False,  # 用检测框训练pose，减小训练-测试gap
+    pose_use_gt_box=True,  # 用GT框保证pose有充分监督信号
     pose_head=dict(
         type='HeatmapHead', num_keypoints=7, in_channels=96, feat_channels=128,
         upsample_factor=2,   # deconv上采样 32→64，减少量化误差
