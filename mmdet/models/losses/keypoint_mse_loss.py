@@ -52,7 +52,8 @@ class KeypointMSELoss(nn.Module):
 
         # 计算平均 loss
         if self.use_target_weight and target_weight is not None:
-            loss = loss.sum() / (target_weight.sum() + 1e-6)
+            # target_weight shape: (B, K, 1, 1), 需要乘 H*W 补偿空间维度
+            loss = loss.sum() / (target_weight.sum() * H * W + 1e-6)
         else:
             loss = loss.mean()
 
