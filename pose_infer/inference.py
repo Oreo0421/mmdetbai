@@ -57,7 +57,7 @@ def parse_args():
 # ---- 推理专用 pipeline（不需要标注和GT热图）----
 INFER_PIPELINE = [
     dict(type='LoadImageFromFile', _scope_='mmdet'),
-    dict(type='Resize', scale=(192, 192), keep_ratio=False, _scope_='mmdet'),
+    dict(type='Resize', scale=(256, 256), keep_ratio=False, _scope_='mmdet'),
     dict(type='PackDetInputs',
          meta_keys=('img_id', 'img_path', 'ori_shape', 'img_shape', 'scale_factor'),
          _scope_='mmdet'),
