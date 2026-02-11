@@ -3,8 +3,8 @@ default_scope = 'mmdet'
 
 data_root = '/home/tbai/Desktop/sensir_coco/'
 num_classes = 1
-img_scale = (192, 192)
-max_epochs = 30
+img_scale = (256, 256)  # 192太小，提升分辨率对pose精度帮助最大
+max_epochs = 100  # 30轮不够，pose需要更长训练
 
 model = dict(
     type='RTMDetWithPose',
@@ -28,15 +28,15 @@ model = dict(
         nms=dict(type='nms', iou_threshold=0.6),
         max_per_img=200),
     pose_topk=200,
-    pose_use_gt_box=True,
+    pose_use_gt_box=False,  # 用检测框训练pose，减小训练-测试gap
     pose_head=dict(
         type='HeatmapHead', num_keypoints=7, in_channels=96, feat_channels=128,
-        upsample_factor=1,
-        sigma=2.0,
+        upsample_factor=2,   # deconv上采样 32→64，减少量化误差
+        sigma=3.0,           # 2.0太小，增大高斯范围更容易学
         match_iou_thr=0.1,
         log_stats=True,
         log_interval=20,
-        loss_keypoint=dict(type='KeypointMSELoss', use_target_weight=True, loss_weight=2.0)),
+        loss_keypoint=dict(type='KeypointMSELoss', use_target_weight=True, loss_weight=5.0)),  # 提高pose loss权重
     train_cfg=dict(assigner=dict(type='DynamicSoftLabelAssigner', topk=13), allowed_border=-1, pos_weight=-1, debug=False),
     test_cfg=dict(nms_pre=1000, score_thr=0.05, nms=dict(type='nms', iou_threshold=0.6), max_per_img=100))
 
@@ -47,6 +47,7 @@ train_pipeline = [
     dict(type='LoadAnnotations', with_bbox=True, with_keypoints=True, _scope_='mmdet'),
     dict(type='Resize', scale=img_scale, keep_ratio=False, _scope_='mmdet'),
     dict(type='RandomFlip', prob=0.5, _scope_='mmdet'),
+    # 左右关键点交换在模型内部 _map_keypoints_to_img 中处理 (2↔3, 5↔6)
     dict(type='PackDetInputsWithPose', _scope_='mmdet'),
 ]
 
@@ -103,7 +104,7 @@ test_cfg = dict(type='TestLoop')
 
 optim_wrapper = dict(type='OptimWrapper', optimizer=dict(type='AdamW', lr=0.0002, weight_decay=0.0001), clip_grad=dict(max_norm=10, norm_type=2))
 param_scheduler = [
-    dict(type='LinearLR', start_factor=0.001, by_epoch=False, begin=0, end=500),
+    dict(type='LinearLR', start_factor=0.001, by_epoch=False, begin=0, end=1000),  # 更长warmup
     dict(type='CosineAnnealingLR', eta_min=1e-6, begin=0, end=max_epochs, T_max=max_epochs, by_epoch=True, convert_to_iter_based=True)]
 
 default_hooks = dict(timer=dict(type='IterTimerHook'), logger=dict(type='LoggerHook', interval=20),

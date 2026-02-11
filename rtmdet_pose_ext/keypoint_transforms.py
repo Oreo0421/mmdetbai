@@ -83,6 +83,13 @@ class GeneratePoseHeatmap(BaseTransform):
             if 0 <= hm_x_int < hm_w and 0 <= hm_y_int < hm_h:
                 heatmap[i] = self._generate_gaussian(hm_h, hm_w, hm_x_int, hm_y_int)
 
+        # ---- 4) 翻转时交换左右对称关键点 ----
+        if flipped and flip_direction == 'horizontal':
+            for left, right in [(2, 3), (5, 6)]:
+                if left < K and right < K:
+                    keypoints_tensor[[left, right]] = keypoints_tensor[[right, left]].copy()
+                    heatmap[[left, right]] = heatmap[[right, left]].copy()
+
         results['gt_keypoints'] = keypoints_tensor
         results['gt_keypoints_heatmap'] = heatmap
         return results

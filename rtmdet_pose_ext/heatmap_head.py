@@ -52,11 +52,15 @@ class HeatmapHead(nn.Module):
         self.log_interval = int(log_interval)
         self._stat_iter = 0
 
-        # Feature extraction
+        # Feature extraction (加深到4层conv，提升pose头容量)
         self.conv1 = nn.Conv2d(in_channels, feat_channels, kernel_size=3, padding=1)
         self.bn1 = nn.BatchNorm2d(feat_channels)
         self.conv2 = nn.Conv2d(feat_channels, feat_channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(feat_channels)
+        self.conv3 = nn.Conv2d(feat_channels, feat_channels, kernel_size=3, padding=1)
+        self.bn3 = nn.BatchNorm2d(feat_channels)
+        self.conv4 = nn.Conv2d(feat_channels, feat_channels, kernel_size=3, padding=1)
+        self.bn4 = nn.BatchNorm2d(feat_channels)
 
         # Upsampling via deconv (24x24 → 48x48)
         if upsample_factor > 1:
@@ -82,6 +86,8 @@ class HeatmapHead(nn.Module):
             x = feats
         x = F.relu(self.bn1(self.conv1(x)), inplace=True)
         x = F.relu(self.bn2(self.conv2(x)), inplace=True)
+        x = F.relu(self.bn3(self.conv3(x)), inplace=True)
+        x = F.relu(self.bn4(self.conv4(x)), inplace=True)
 
         if self.deconv is not None:
             x = F.relu(self.bn_deconv(self.deconv(x)), inplace=True)
@@ -451,11 +457,18 @@ class HeatmapHead(nn.Module):
                 img_h, img_w = float(img_shape[0]), float(img_shape[1])
                 if flip_dir == 'horizontal':
                     kpts[..., 0] = img_w - 1.0 - kpts[..., 0]
+                    # 交换左右对称关键点: (2,3)=hand right/left, (5,6)=foot right/left
+                    for left, right in [(2, 3), (5, 6)]:
+                        if kpts.size(0) > max(left, right):
+                            kpts[[left, right]] = kpts[[right, left]].clone()
                 elif flip_dir == 'vertical':
                     kpts[..., 1] = img_h - 1.0 - kpts[..., 1]
                 elif flip_dir == 'diagonal':
                     kpts[..., 0] = img_w - 1.0 - kpts[..., 0]
                     kpts[..., 1] = img_h - 1.0 - kpts[..., 1]
+                    for left, right in [(2, 3), (5, 6)]:
+                        if kpts.size(0) > max(left, right):
+                            kpts[[left, right]] = kpts[[right, left]].clone()
 
         return kpts
 
