@@ -34,6 +34,14 @@ python pose_infer/inference.py \
 pipeline :
 The image is processed through a Backbone and Neck to obtain FPN features [P3, P4, P5]. Then, RTMDetHead is used to predict the bounding box (x1, y1, x2, y2). In RoIAlign, the features are clipped from the FPN using the four corners of the bounding box, resulting in a 48×48 feature map. Next, HeatmapHead is used to predict heatmaps, obtaining 7 keypoints, resulting in 96×96 heat maps. Finally, these are decoded and mapped back to the image's coordinate system.
 
+  训练流程对应代码：
+   rtmdet_with_pose.py:71   loss()  
+   检测loss    rtmdet_with_pose.py:91  bbox_head.loss(x, ...)
+   构建GT RoIs  rtmdet_with_pose.py:262  _build_gt_rois()
+    RoI特征裁剪  rtmdet_with_pose.py:116  pose_roi_extractor(x, rois)  
+    生成热图GT   heatmap_head.py:319      _build_targets_from_rois() 
+    关键点映射   heatmap_head.py:425      _map_keypoints_to_img() + 左右交换 
+    Pose loss    heatmap_head.py:184      MSE(pred_heatmap, gt_heatmap)  
 
 
 Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.553
