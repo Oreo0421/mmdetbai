@@ -19,6 +19,7 @@ qQ947425517.
 
 python tools/test.py rtmdet_pose_clean.py /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_0211/best_coco_bbox_mAP_epoch_48.pth
 
+python tools/test.py rtmdet_pose_finetune.py /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_finetune/best_coco_bbox_mAP_epoch_*.pth   
 
 
 python pose_infer/inference.py \
