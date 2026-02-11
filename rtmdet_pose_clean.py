@@ -36,7 +36,7 @@ model = dict(
         match_iou_thr=0.1,
         log_stats=True,
         log_interval=20,
-        loss_keypoint=dict(type='KeypointMSELoss', use_target_weight=True, loss_weight=5.0)),  # 提高pose loss权重
+        loss_keypoint=dict(type='KeypointMSELoss', use_target_weight=True, loss_weight=5.0, invisible_weight=0.3)),  # 不可见点也参与loss，权重0.3
     train_cfg=dict(assigner=dict(type='DynamicSoftLabelAssigner', topk=13), allowed_border=-1, pos_weight=-1, debug=False),
     test_cfg=dict(nms_pre=1000, score_thr=0.3, nms=dict(type='nms', iou_threshold=0.45), max_per_img=100))
 
@@ -113,7 +113,7 @@ default_hooks = dict(timer=dict(type='IterTimerHook'), logger=dict(type='LoggerH
                      sampler_seed=dict(type='DistSamplerSeedHook'), visualization=dict(type='DetVisualizationHook'))
 
 env_cfg = dict(cudnn_benchmark=False, mp_cfg=dict(mp_start_method='fork', opencv_num_threads=0), dist_cfg=dict(backend='nccl'))
-visualizer = dict(type='DetLocalVisualizer', vis_backends=[dict(type='LocalVisBackend')], name='visualizer')
+visualizer = dict(type='DetLocalVisualizer', vis_backends=[dict(type='LocalVisBackend'), dict(type='TensorboardVisBackend')], name='visualizer')
 log_processor = dict(type='LogProcessor', window_size=50, by_epoch=True)
 log_level = 'INFO'
 load_from = None
