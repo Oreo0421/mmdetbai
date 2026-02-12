@@ -62,13 +62,19 @@ class HeatmapHead(nn.Module):
         self.conv4 = nn.Conv2d(feat_channels, feat_channels, kernel_size=3, padding=1)
         self.bn4 = nn.BatchNorm2d(feat_channels)
 
-        # Upsampling via deconv (24x24 → 48x48)
+        # Upsampling via deconv (支持多层: factor=2→1层, factor=4→2层)
         if upsample_factor > 1:
-            self.deconv = nn.ConvTranspose2d(
-                feat_channels, feat_channels,
-                kernel_size=4, stride=2, padding=1,  # exactly 2x upsample
-            )
-            self.bn_deconv = nn.BatchNorm2d(feat_channels)
+            deconv_layers = []
+            current_factor = upsample_factor
+            while current_factor > 1:
+                deconv_layers.extend([
+                    nn.ConvTranspose2d(feat_channels, feat_channels,
+                                       kernel_size=4, stride=2, padding=1),
+                    nn.BatchNorm2d(feat_channels),
+                    nn.ReLU(inplace=True),
+                ])
+                current_factor //= 2
+            self.deconv = nn.Sequential(*deconv_layers)
         else:
             self.deconv = None
 
@@ -90,10 +96,9 @@ class HeatmapHead(nn.Module):
         x = F.relu(self.bn4(self.conv4(x)), inplace=True)
 
         if self.deconv is not None:
-            x = F.relu(self.bn_deconv(self.deconv(x)), inplace=True)
-            # Now x is [B, feat_channels, 48, 48]
+            x = self.deconv(x)  # Sequential内部已有BN+ReLU
 
-        heatmaps = self.pred_layer(x)  # [B, K, 48, 48]
+        heatmaps = self.pred_layer(x)  # [B, K, H', W']
         return heatmaps
 
     # ------------------------------------------------------------------

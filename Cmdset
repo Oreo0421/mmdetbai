@@ -4,7 +4,20 @@ path:
 /home/tbai/baimmdet
 
 训练cmd
-python tools/train.py rtmdet_pose_clean.py --work-dir work_dirs/rtmdet_pose_0211/
+
+
+
+tensorboard --logdir work_dirs/rtmdet_pose_0212/ --port 6006
+ssh -L 6006:localhost:6006 tbai@dst-mikrowelle.etit.tu-chemnitz.de
+http://localhost:6006
+
+
+cd ~/mmdetection/mmdetection
+tensorboard --logdir work_dirs/rtmdet_pose_0212 --port 6006 --bind_all
+
+
+
+python tools/train.py rtmdet_pose_clean.py --work-dir work_dirs/rtmdet_pose_0212/
 
 如果遇到gpu崩溃，mikro这个电脑老崩
 使用：

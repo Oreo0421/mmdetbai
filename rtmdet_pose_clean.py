@@ -3,8 +3,8 @@ default_scope = 'mmdet'
 
 data_root = '/home/tbai/Desktop/sensir_coco/'
 num_classes = 1
-img_scale = (256, 256)  # 192太小，提升分辨率对pose精度帮助最大
-max_epochs = 80  # 继续训练到80轮
+img_scale = (384, 384)  # 256→384，更高分辨率提升pose精度
+max_epochs = 80
 
 model = dict(
     type='RTMDetWithPose',
@@ -31,8 +31,8 @@ model = dict(
     pose_use_gt_box=True,  # 用GT框保证pose有充分监督信号
     pose_head=dict(
         type='HeatmapHead', num_keypoints=7, in_channels=96, feat_channels=128,
-        upsample_factor=2,   # deconv上采样 32→64，减少量化误差
-        sigma=3.0,           # 2.0太小，增大高斯范围更容易学
+        upsample_factor=4,   # 两层deconv上采样 48→96，量化误差减半
+        sigma=4.0,           # 配合96分辨率适当增大sigma
         match_iou_thr=0.1,
         log_stats=True,
         log_interval=20,
@@ -41,13 +41,19 @@ model = dict(
     test_cfg=dict(nms_pre=1000, score_thr=0.3, nms=dict(type='nms', iou_threshold=0.45), max_per_img=100))
 
 # ========= Pipeline =========
-# ROI pose heatmap size = 48x48
+# ROI pose heatmap size = 96x96 (两层deconv)
 train_pipeline = [
     dict(type='LoadImageFromFile', _scope_='mmdet'),
     dict(type='LoadAnnotations', with_bbox=True, with_keypoints=True, _scope_='mmdet'),
     dict(type='Resize', scale=img_scale, keep_ratio=False, _scope_='mmdet'),
     dict(type='RandomFlip', prob=0.5, _scope_='mmdet'),
-    # 左右关键点交换在模型内部 _map_keypoints_to_img 中处理 (2↔3, 5↔6)
+    # 颜色增强：亮度/对比度/饱和度/色调随机扰动，不影响关键点坐标
+    dict(type='PhotoMetricDistortion',
+         brightness_delta=32,
+         contrast_range=(0.5, 1.5),
+         saturation_range=(0.5, 1.5),
+         hue_delta=18,
+         _scope_='mmdet'),
     dict(type='PackDetInputsWithPose', _scope_='mmdet'),
 ]
 
