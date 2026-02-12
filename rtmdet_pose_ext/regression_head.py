@@ -121,8 +121,7 @@ class CoordinateRegressionHead(nn.Module):
         # 坐标输出初始化为 0.5（RoI 中心），加速收敛
         nn.init.zeros_(self.fc_coords.weight)
         nn.init.constant_(self.fc_coords.bias, 0.0)  # sigmoid(0)=0.5 → 中心
-        print(f"[CoordinateRegressionHead] init done: K={self.num_keypoints}, "
-              f"in={in_channels}, feat={feat_channels}, fc={fc_channels}")
+        print(f"[CoordinateRegressionHead] init done: K={self.num_keypoints}")
 
     def forward(self, feats: Union[Tuple[Tensor, ...], Tensor]) -> Tuple[Tensor, Tensor]:
         """Extract features and predict coordinates + scores.
