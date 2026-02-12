@@ -73,6 +73,7 @@ class CoordinateRegressionHead(nn.Module):
         self.log_stats = log_stats
         self.log_interval = int(log_interval)
         self._stat_iter = 0
+        self._fwd_count = 0
 
         K = num_keypoints
 
@@ -120,6 +121,8 @@ class CoordinateRegressionHead(nn.Module):
         # 坐标输出初始化为 0.5（RoI 中心），加速收敛
         nn.init.zeros_(self.fc_coords.weight)
         nn.init.constant_(self.fc_coords.bias, 0.0)  # sigmoid(0)=0.5 → 中心
+        print(f"[CoordinateRegressionHead] init done: K={self.num_keypoints}, "
+              f"in={in_channels}, feat={feat_channels}, fc={fc_channels}")
 
     def forward(self, feats: Union[Tuple[Tensor, ...], Tensor]) -> Tuple[Tensor, Tensor]:
         """Extract features and predict coordinates + scores.
@@ -138,6 +141,21 @@ class CoordinateRegressionHead(nn.Module):
 
         N = x.size(0)
         K = self.num_keypoints
+
+        # Debug: log first few forward passes
+        self._fwd_count += 1
+        if self._fwd_count <= 3:
+            print(f"[CoordRegHead.forward] call#{self._fwd_count} "
+                  f"input={x.shape} N={N} device={x.device}")
+            import sys; sys.stdout.flush()
+
+        # Handle N=0 case safely (BN and CUDA can segfault on empty tensors)
+        if N == 0:
+            device = x.device
+            dtype = x.dtype
+            empty_coords = torch.zeros((0, K, 2), device=device, dtype=dtype)
+            empty_scores = torch.zeros((0, K), device=device, dtype=dtype)
+            return empty_coords, empty_scores
 
         # Spatial feature extraction
         x = F.relu(self.bn1(self.conv1(x)), inplace=True)
@@ -182,12 +200,13 @@ class CoordinateRegressionHead(nn.Module):
         batch_data_samples: List,
     ) -> Dict[str, Tensor]:
         """RoI-based coordinate regression loss."""
-        coords, score_logits = self.forward(roi_feats)  # [N, K, 2], [N, K]
-        N = coords.size(0)
+        N = roi_feats.size(0)
 
         if N == 0:
             zero = roi_feats.sum() * 0
             return {'loss_keypoint': zero}
+
+        coords, score_logits = self.forward(roi_feats)  # [N, K, 2], [N, K]
 
         gt_coords, gt_vis = self._build_coord_targets(
             rois, batch_data_samples, coords.dtype, coords.device

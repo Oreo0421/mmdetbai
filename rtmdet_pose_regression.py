@@ -79,13 +79,13 @@ custom_metainfo = dict(
 )
 
 train_dataloader = dict(
-    batch_size=4, num_workers=4, persistent_workers=True, sampler=dict(type='DefaultSampler', shuffle=True),
+    batch_size=4, num_workers=0, persistent_workers=False, sampler=dict(type='DefaultSampler', shuffle=True),
     dataset=dict(type='CocoPoseDataset', data_root=data_root, metainfo=custom_metainfo,
                  ann_file='annotations/instances_train.json', data_prefix=dict(img=''),
                  filter_cfg=dict(filter_empty_gt=True, min_size=1), pipeline=train_pipeline))
 
 val_dataloader = dict(
-    batch_size=1, num_workers=2, persistent_workers=True, sampler=dict(type='DefaultSampler', shuffle=False),
+    batch_size=1, num_workers=0, persistent_workers=False, sampler=dict(type='DefaultSampler', shuffle=False),
     dataset=dict(type='CocoPoseDataset', data_root=data_root, metainfo=custom_metainfo,
                  ann_file='annotations/instances_val.json', data_prefix=dict(img=''), test_mode=True, pipeline=test_pipeline))
 
