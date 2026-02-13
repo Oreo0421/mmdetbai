@@ -147,7 +147,7 @@ val_evaluator = [
         type='FallingMetric',
         ann_file=data_root + 'annotations/instances_val.json',
         iou_thr=0.5,
-        score_thr=0.85,
+        score_thr=0.5,
     ),
 ]
 test_evaluator = val_evaluator

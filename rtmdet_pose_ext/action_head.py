@@ -49,7 +49,7 @@ class ActionTemporalHead(nn.Module):
         num_gru_layers: int = 1,
         num_classes: int = 1,
         loss_weight: float = 1.0,
-        pos_weight: float = 5.0,
+        pos_weight: float = 1.0,
         dropout: float = 0.1,
     ):
         super().__init__()
