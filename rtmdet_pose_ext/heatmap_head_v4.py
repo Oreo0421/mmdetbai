@@ -113,6 +113,12 @@ class HeatmapHeadV4(HeatmapHead):
         )
 
         # ---- 1. Foreground-weighted MSE (定位) ----
+        #  mse = (pred_heatmap - gt_heatmap)²        # 逐像素差                                                                                                                                                             
+        #前景像素 (peak区域) × 10，背景像素 × 1       # 解决91%背景稀释问题                                                                                                                                               
+        #按7个点平均，再乘以可见性权重：
+        # ifv=0 (out of image): × 0    → 不参与
+        # v=1 (covaer): × 0.3  → 低权重学习
+        # v=2 (visiable): × 1.0  → 全权重
         mse = F.mse_loss(heatmaps, gt_heatmaps, reduction='none')  # (N,K,H,W)
 
         # 前景 (peak) 像素加权，背景权重=1
@@ -132,6 +138,9 @@ class HeatmapHeadV4(HeatmapHead):
         loss_loc = (per_kpt_mse.sum(dim=1) / K).mean()
 
         # ---- 2. Visibility BCE (可见性分类) ----
+        #  vis_branch: 共享conv特征 → GAP(全局平均池化) → FC → 7个logit
+        #  GT label:  v=2 → 1 (可见)，v=0/v=1 → 0 (不可见)
+        # loss_vis = BCE(pred_logit, gt_label)
         loss_vis = F.binary_cross_entropy_with_logits(
             vis_logits, vis_labels, reduction='mean'
         )

@@ -7,17 +7,27 @@ path:
 
 
 
-tensorboard --logdir work_dirs/rtmdet_pose_0212/ --port 6006
+
+claude --resume c8b1e93e-f88e-4ec9-8581-858fa3521bdf
+
+
+tensorboard --logdir work_dirs/rtmdet_pose_0212_v2/ --port 6006
 ssh -L 6006:localhost:6006 tbai@dst-mikrowelle.etit.tu-chemnitz.de
 http://localhost:6006
-
+tensorboard --logdir work_dirs/rtmdet_pose_regression/ --port 6008
 
 cd ~/mmdetection/mmdetection
 tensorboard --logdir work_dirs/rtmdet_pose_0212 --port 6006 --bind_all
 
 
+export CUDA_VISIBLE_DEVICES=1 
+python tools/train.py rtmdet_pose_v4.py --work-dir work_dirs/rtmdet_pose_v4/
 
-python tools/train.py rtmdet_pose_clean.py --work-dir work_dirs/rtmdet_pose_0212/
+export CUDA_VISIBLE_DEVICES=1 
+python tools/train.py rtmdet_pose_clean.py --work-dir work_dirs/rtmdet_pose_0212_v2/
+
+export CUDA_VISIBLE_DEVICES=0 
+python tools/train.py rtmdet_pose_regression.py --work-dir work_dirs/rtmdet_pose_regression/
 
 如果遇到gpu崩溃，mikro这个电脑老崩
 使用：
@@ -68,5 +78,21 @@ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.553
  Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] =  0.000
  Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = -1.000
 02/11 13:20:25 - mmengine - INFO - Epoch(test) [1194/1194]    coco/bbox_mAP: 0.8870  coco/bbox_mAP_50: 0.9810  coco/bbox_mAP_75: 0.9480  coco/bbox_mAP_s: 0.8870  coco/bbox_mAP_m: 0.8220  coco/bbox_mAP_l: -1.0000  coco/AP: 0.5525  coco/AP .5: 0.8187  coco/AP .75: 0.4585  coco/AP (M): 0.0000  coco/AP (L): -1.0000  coco/AR: 0.5735  coco/AR .5: 0.8311  coco/AR .75: 0.4943  coco/AR (M): 0.0000  coco/AR (L): -1.0000  data_time: 0.0020  time: 0.1327
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
