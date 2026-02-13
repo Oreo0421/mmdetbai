@@ -7,7 +7,7 @@ from mmdet.registry import MODELS
 from mmdet.structures import OptSampleList, SampleList
 from mmdet.utils import ConfigType, OptConfigType, OptMultiConfig
 from mmdet.models.detectors.single_stage import SingleStageDetector
-from mmdet.structures.bbox import get_box_tensor
+from mmdet.structures.bbox import bbox_overlaps, get_box_tensor
 
 
 @MODELS.register_module(force=True)
@@ -41,6 +41,7 @@ class RTMDetWithPose(SingleStageDetector):
         pose_topk: int = 1,
         pose_min_box_size: float = 2.0,
         pose_use_gt_box: bool = True,
+        action_head: OptConfigType = None,
         train_cfg: OptConfigType = None,
         test_cfg: OptConfigType = None,
         data_preprocessor: OptConfigType = None,
@@ -67,6 +68,11 @@ class RTMDetWithPose(SingleStageDetector):
         self.pose_topk = pose_topk
         self.pose_min_box_size = float(pose_min_box_size)
         self.pose_use_gt_box = bool(pose_use_gt_box)
+
+        # Optional: action classification head
+        self.action_head = (
+            MODELS.build(action_head) if action_head is not None else None
+        )
     
     def loss(self, batch_inputs: Tensor, batch_data_samples: SampleList) -> dict:
         """Calculate detection + pose estimation losses.
@@ -119,6 +125,21 @@ class RTMDetWithPose(SingleStageDetector):
                 )
 
         losses.update(pose_losses)
+
+        # 3. Action classification losses (if action_head is configured)
+        if self.action_head is not None and self.pose_roi_extractor is not None:
+            if rois.numel() > 0:
+                # 用 GT keypoints 训练 action head（避免训练初期 pose 预测是噪声）
+                kpt_features, gt_falling = self._build_action_gt(
+                    rois, batch_data_samples)
+                if kpt_features is not None:
+                    action_losses = self.action_head.loss(
+                        kpt_features, gt_falling)
+                    losses.update(action_losses)
+                else:
+                    losses['loss_action'] = x[0].sum() * 0
+            else:
+                losses['loss_action'] = x[0].sum() * 0
 
         return losses
     
@@ -183,6 +204,14 @@ class RTMDetWithPose(SingleStageDetector):
             roi_feats, rois, batch_data_samples, rescale=rescale
         )
         self._attach_pose(det_results_out, roi_map, pose_kpts, pose_scores)
+
+        # Action classification (single-frame, T=1)
+        if self.action_head is not None:
+            kpt_features = self._prepare_kpt_features_for_predict(
+                pose_kpts, pose_scores, rois)
+            action_probs = self.action_head.predict(kpt_features)
+            self._attach_action(det_results_out, roi_map, action_probs)
+
         return self.add_pred_to_datasample(batch_data_samples, det_results_out)
 
     def _build_pose_rois(self, det_results, batch_data_samples=None, topk: int = 1):
@@ -351,3 +380,148 @@ class RTMDetWithPose(SingleStageDetector):
                 continue
             inst.keypoints[inst_idx] = keypoints[i]
             inst.keypoint_scores[inst_idx] = keypoint_scores[i]
+
+    # ------------------------------------------------------------------
+    # Action head helpers
+    # ------------------------------------------------------------------
+    def _build_action_gt(self, rois, batch_data_samples):
+        """Build action training inputs from GT keypoints and falling labels.
+
+        Uses GT keypoints (not pose_head predictions) so the action head
+        gets clean training signal from epoch 1.
+
+        Returns:
+            kpt_features: (N, 1, K*3) normalized GT keypoints, or None.
+            gt_falling: (N,) falling labels.
+        """
+        num_rois = rois.size(0)
+        device = rois.device
+        K = getattr(self.pose_head, 'num_keypoints', 7)
+
+        kpt_features = torch.zeros(num_rois, 1, K * 3, device=device)
+        gt_falling = torch.zeros(num_rois, device=device)
+        has_any = False
+
+        for i in range(num_rois):
+            img_idx = int(rois[i, 0])
+            if img_idx >= len(batch_data_samples):
+                continue
+            ds = batch_data_samples[img_idx]
+            gt_instances = getattr(ds, 'gt_instances', None)
+            if gt_instances is None or len(gt_instances) == 0:
+                continue
+
+            gt_bboxes = getattr(gt_instances, 'bboxes', None)
+            if gt_bboxes is None or len(gt_bboxes) == 0:
+                continue
+            gt_bboxes_t = get_box_tensor(gt_bboxes).to(device=device)
+            if gt_bboxes_t.numel() == 0:
+                continue
+
+            # IoU matching
+            roi_box = rois[i, 1:].unsqueeze(0)
+            ious = bbox_overlaps(roi_box, gt_bboxes_t)
+            max_iou, gt_idx = ious.max(dim=1)
+            if float(max_iou.item()) < 0.1:
+                continue
+            idx = int(gt_idx.item())
+
+            # Falling label
+            falling = getattr(gt_instances, 'falling', None)
+            if falling is not None and idx < len(falling):
+                gt_falling[i] = falling[idx]
+
+            # GT keypoints → 归一化到 [0,1] relative to RoI
+            gt_kpts = getattr(gt_instances, 'keypoints', None)
+            if gt_kpts is None:
+                gt_kpts = getattr(ds, 'gt_keypoints', None)
+            if gt_kpts is None:
+                continue
+            if isinstance(gt_kpts, Tensor):
+                kpts = gt_kpts.to(device=device, dtype=torch.float32)
+            else:
+                kpts = torch.as_tensor(gt_kpts, device=device, dtype=torch.float32)
+            if kpts.dim() == 2:
+                kpts = kpts.unsqueeze(0)
+            if idx >= kpts.size(0):
+                continue
+
+            kpts_i = kpts[idx]  # (K, 3) — x, y, visibility
+            x1, y1, x2, y2 = rois[i, 1:].tolist()
+            roi_w = max(x2 - x1, 1.0)
+            roi_h = max(y2 - y1, 1.0)
+
+            norm_x = ((kpts_i[:K, 0] - x1) / roi_w).clamp(0, 1)
+            norm_y = ((kpts_i[:K, 1] - y1) / roi_h).clamp(0, 1)
+            # visibility: v>=2 可见=1, v==1 遮挡=0.5, v==0 不可见=0
+            vis = kpts_i[:K, 2].clone()
+            vis = (vis >= 2).float() + (vis == 1).float() * 0.5
+
+            feat = torch.stack([norm_x, norm_y, vis], dim=-1)  # (K, 3)
+            kpt_features[i, 0] = feat.reshape(-1)  # (K*3,)
+            has_any = True
+
+        if not has_any:
+            return None, None
+        return kpt_features, gt_falling
+
+    def _prepare_kpt_features_for_predict(self, pose_kpts, pose_scores, rois):
+        """Normalize predicted keypoints relative to RoI box for action prediction.
+
+        Handles invisible keypoints: points outside the RoI or with low
+        visibility scores get vis=0 and coordinates zeroed out, matching
+        the GT encoding used during training.
+
+        Args:
+            pose_kpts: (N, K, 2) in image coordinates.
+            pose_scores: (N, K) visibility scores from pose_head.
+            rois: (N, 5) [batch_idx, x1, y1, x2, y2].
+
+        Returns:
+            kpt_features: (N, 1, K*3) normalized.
+        """
+        x1 = rois[:, 1].unsqueeze(1)  # (N, 1)
+        y1 = rois[:, 2].unsqueeze(1)
+        x2 = rois[:, 3].unsqueeze(1)
+        y2 = rois[:, 4].unsqueeze(1)
+        roi_w = (x2 - x1).clamp(min=1.0)
+        roi_h = (y2 - y1).clamp(min=1.0)
+
+        # Normalize to [0, 1] relative to RoI
+        raw_x = (pose_kpts[:, :, 0] - x1) / roi_w  # (N, K)
+        raw_y = (pose_kpts[:, :, 1] - y1) / roi_h  # (N, K)
+
+        # 检测超出 RoI 范围的关键点 → invisible
+        out_of_bounds = (raw_x < -0.1) | (raw_x > 1.1) | \
+                        (raw_y < -0.1) | (raw_y > 1.1)  # (N, K)
+
+        # 和训练保持一致的 visibility 编码:
+        # pose_scores (sigmoid of vis_logits) ∈ [0, 1]
+        # 高分→可见(~1.0), 低分→遮挡(~0.5→0), 超出范围→0
+        vis = pose_scores.clone()
+        vis[out_of_bounds] = 0.0
+
+        norm_x = raw_x.clamp(0, 1)
+        norm_y = raw_y.clamp(0, 1)
+        # 不可见的点坐标也置零，避免噪声干扰
+        norm_x[out_of_bounds] = 0.0
+        norm_y[out_of_bounds] = 0.0
+
+        kpt = torch.stack([norm_x, norm_y, vis], dim=-1)  # (N, K, 3)
+        return kpt.reshape(kpt.size(0), 1, -1)  # (N, 1, K*3)
+
+    def _attach_action(self, det_results, roi_map, action_probs):
+        """Attach action prediction scores to detection results."""
+        for inst in det_results:
+            if inst is None or len(inst) == 0:
+                continue
+            device = inst.bboxes.device
+            inst.action_scores = torch.zeros(len(inst), device=device)
+
+        for i, (img_idx, inst_idx) in enumerate(roi_map):
+            if img_idx >= len(det_results):
+                continue
+            inst = det_results[img_idx]
+            if inst is None or inst_idx >= len(inst):
+                continue
+            inst.action_scores[inst_idx] = action_probs[i]

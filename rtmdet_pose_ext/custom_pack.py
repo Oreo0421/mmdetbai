@@ -85,4 +85,19 @@ class PackDetInputsWithPose(PackDetInputs):
                             kpts = kpts[:1].repeat(N, 1, 1)
                     gt_instances.keypoints = kpts
 
+            # ---- pack falling labels into gt_instances ----
+            if 'instances' in results and len(results['instances']) > 0:
+                falling_labels = []
+                for inst in results['instances']:
+                    falling_labels.append(int(inst.get('falling', 0)))
+                falling_t = torch.tensor(falling_labels, dtype=torch.float32)
+                if len(falling_t) > N:
+                    falling_t = falling_t[:N]
+                elif len(falling_t) < N:
+                    falling_t = torch.cat([
+                        falling_t,
+                        torch.zeros(N - len(falling_t), dtype=torch.float32)
+                    ])
+                gt_instances.falling = falling_t
+
         return packed

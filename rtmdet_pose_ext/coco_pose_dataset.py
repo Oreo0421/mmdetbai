@@ -27,5 +27,11 @@ class CocoPoseDataset(CocoDataset):
                     ann = raw_ann_info[i]
                     if 'keypoints' in ann:
                         inst['keypoints'] = ann['keypoints']
-        
+                    # 提取 falling 属性 (binary: 0/1)
+                    attributes = ann.get('attributes', {})
+                    if isinstance(attributes, dict):
+                        inst['falling'] = int(attributes.get('falling', 0))
+                    else:
+                        inst['falling'] = 0
+
         return data_info
