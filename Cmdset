@@ -34,11 +34,18 @@ python tools/train.py rtmdet_pose_v5.py --work-dir work_dirs/rtmdet_pose_v5/
 
  python tools/train.py rtmdet_pose_v6.py --work-dir work_dirs/rtmdet_pose_v6
 
+
+
+ python tools/train.py rtmdet_pose_v7_withclass_track.py --work-dir work_dirs/rtmdet_pose_v7_withclass_track
+
 如果遇到gpu崩溃，mikro这个电脑老崩
 使用：
 python tools/train.py rtmdet_pose_clean.py \
   --work-dir work_dirs/rtmdet_pose_0206/ \
   --resume
+
+
+
 
 微调
 python tools/train.py rtmdet_pose_finetune.py --work-dir work_dirs/rtmdet_pose_finetune/
@@ -51,7 +58,7 @@ python tools/test.py rtmdet_pose_finetune.py /home/tbai/mmdetection/mmdetection/
 
 python tools/test.py rtmdet_pose_v4.py /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_v4_3/best_coco_bbox_mAP_epoch_77.pth   
 
-
+python tools/test.py rtmdet_pose_v6.py /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_v6/best_coco_bbox_mAP_epoch_75.pth   
 
 python pose_infer/inference.py \
     --config /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_clean/rtmdet_pose_clean.py \
@@ -62,13 +69,14 @@ python pose_infer/inference.py \
     --kpt-thr 0.1 \
     --radius 1 
     
-  python pose_infer/infer_simdr.py \
-    --checkpoint work_dirs/rtmdet_pose_v6/best_coco_bbox_mAP_epoch_4.pth \
-    --input /path/to/images \
-    --output /path/to/output \
-    --det-thr 0.3 --kpt-thr 0.3 --show-kpt-idx
 
-    
+  python pose_infer/infer_simdr.py \
+    --radius 1 \
+    --config /home/tbai/mmdetection/mmdetection/rtmdet_pose_v6.py \
+    --checkpoint /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_v6/best_coco_bbox_mAP_epoch_75.pth \
+    --input /home/tbai/Desktop/SenIRDatasetProcessed/1A-2\ Walking/AAG/stitched_png \
+    --output /home/tbai/Desktop/results0213_v6/
+
 pipeline :
 The image is processed through a Backbone and Neck to obtain FPN features [P3, P4, P5]. Then, RTMDetHead is used to predict the bounding box (x1, y1, x2, y2). In RoIAlign, the features are clipped from the FPN using the four corners of the bounding box, resulting in a 48×48 feature map. Next, HeatmapHead is used to predict heatmaps, obtaining 7 keypoints, resulting in 96×96 heat maps. Finally, these are decoded and mapped back to the image's coordinate system.
 
@@ -117,11 +125,12 @@ v4_2
 
 
   Loss 公式： loss = 5.0 × fg_weighted_MSE + 1.0 × BCE_vis
-V4.3
+
+  mAp 提升到58%
 
   V5 HeatmapHeadV4 
 
-  V4 的 config 基础上加数据增强：
+  V4。2 的 config 基础上加数据增强：
        改动                               内容                         
   
    旋转增强       RandomRotateWithPose(±20°, prob=0.5)，画布扩展不裁切 
@@ -130,7 +139,9 @@ V4.3
  
   Head/Loss 不变，和 V4 完全一样。
 
-  结果： kpt AP = 0.570（和 V4 几乎相同，旋转增强对此数据集无明显帮助
+  结果： kpt AP = 0.570（和 V4 几乎相同，旋转增强对此数据集无明显帮助、
+
+  对比V4，2无改变
 
 v5
 
@@ -166,7 +177,39 @@ v6:
 
 
 
+=================================================================================
+  # 图片文件夹 (单帧, 无跟踪)                                                                                                                                                                                      
+  python pose_infer/infer_classifyandpred.py \                
+      --config rtmdet_pose_v7_withclass_track.py \                                                                                                                                                                 
+      --checkpoint work_dirs/xxx/best.pth \                                                                                                                                                                        
+      --input /path/to/images \
+      --output /path/to/results
 
+  # 图片文件夹 + ByteTrack 时序 GRU
+  python pose_infer/infer_classifyandpred.py \
+      --config rtmdet_pose_v7_withclass_track.py \
+      --checkpoint work_dirs/xxx/best.pth \
+      --input /path/to/images \
+      --output /path/to/results \
+      --use-tracker
+
+  # 视频文件 (自动启用 tracker + 保存视频)
+  python pose_infer/infer_classifyandpred.py \
+      --input /path/to/video.mp4 \
+      --save-video
+
+  可视化效果：
+  - 正常 → 绿框 + normal(0.12)
+  - 跌倒 → 红框 + FALLING(0.87) + FALL DETECTED 警告
+
+  - tracker 模式额外显示 ID:3 跟踪编号
+
+❯ 多个图片帧                                                                                                                                                                                                 
+                                                                                                                                                                                         
+                                                              
+  python pose_infer/infer_classifyandpred.py --config rtmdet_pose_v7_withclass_track.py                                                                                --input /path/to/sequential_frames/ \                                      
+      --checkpoint work_dirs/xxx/best.pth \                                                                                                                                                                        
+      --use-tracker  
 
 
 
