@@ -8,12 +8,13 @@ path:
 export CUDA_VISIBLE_DEVICES=0
 python tools/train.py rtmdet_pose_v4.py --work-dir work_dirs/rtmdet_pose_v4_3  
 
-claude --resume c8b1e93e-f88e-4ec9-8581-858fa3521bdf
 
 
-tensorboard --logdir work_dirs/rtmdet_pose_0212_v2/ --port 6006
+tensorboard --logdir work_dirs/rtmdet_pose_v6/ --port 6006
 ssh -L 6006:localhost:6006 tbai@dst-mikrowelle.etit.tu-chemnitz.de
+
 http://localhost:6006
+
 tensorboard --logdir work_dirs/rtmdet_pose_regression/ --port 6008
 
 cd ~/mmdetection/mmdetection
@@ -31,7 +32,7 @@ python tools/train.py rtmdet_pose_regression.py --work-dir work_dirs/rtmdet_pose
 
 python tools/train.py rtmdet_pose_v5.py --work-dir work_dirs/rtmdet_pose_v5/
 
-
+ python tools/train.py rtmdet_pose_v6.py --work-dir work_dirs/rtmdet_pose_v6
 
 如果遇到gpu崩溃，mikro这个电脑老崩
 使用：
@@ -60,6 +61,13 @@ python pose_infer/inference.py \
     --det-thr 0.1 \
     --kpt-thr 0.1 \
     --radius 1 
+    
+  python pose_infer/infer_simdr.py \
+    --checkpoint work_dirs/rtmdet_pose_v6/best_coco_bbox_mAP_epoch_4.pth \
+    --input /path/to/images \
+    --output /path/to/output \
+    --det-thr 0.3 --kpt-thr 0.3 --show-kpt-idx
+
     
 pipeline :
 The image is processed through a Backbone and Neck to obtain FPN features [P3, P4, P5]. Then, RTMDetHead is used to predict the bounding box (x1, y1, x2, y2). In RoIAlign, the features are clipped from the FPN using the four corners of the bounding box, resulting in a 48×48 feature map. Next, HeatmapHead is used to predict heatmaps, obtaining 7 keypoints, resulting in 96×96 heat maps. Finally, these are decoded and mapped back to the image's coordinate system.
@@ -111,7 +119,7 @@ v4_2
   Loss 公式： loss = 5.0 × fg_weighted_MSE + 1.0 × BCE_vis
 V4.3
 
-  V5 (HeatmapHeadV4 
+  V5 HeatmapHeadV4 
 
   V4 的 config 基础上加数据增强：
        改动                               内容                         
@@ -130,15 +138,28 @@ v5
 
   在 V4 loss j加上 soft-argmax 坐标回归：
 
-  soft-argmax      heatmap × temperature(β=10) → softmax → 期望坐标，可导
+  soft-argmax      heatmap × temperature(β=10)  softmax  期望坐标，可导
  
   SmoothL1 坐标 loss 直接优化预测坐标与 GT 坐标的距离                      
 
    精确 GT 坐标      浮点坐标（无量化），比 heatmap 的整数 argmax 更精确    
  
-  Loss 公式： loss = 5.0 × fg_weighted_MSE + 1.0 × BCE_vis + 2.0 × SmoothL1_coord
+  Loss 公式： loss = 5.0 × fg_weighted_MSE + 1.0 × BCE_vis + 0.5 × SmoothL1_coord
 
 
+v6:
+  
+            V4 (2D Heatmap)        V6 (SimDR 1D)      
+  
+  预测   96×96 2D 热图         两条 96-bin 1D 向量    
+  
+  Loss    MSE(前景加权)          KL 散度(1D 高斯)   
+  
+  上采样 deconv 48→96          1D ConvTranspose      
+  
+   解码    2D argmax + sub-pixel 1D argmax / scale      
+ 
+ 量化   1/96 像素              1/96 像素(但 x,y 独立) 
 
 
 
