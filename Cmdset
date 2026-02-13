@@ -5,8 +5,8 @@ path:
 
 训练cmd
 
-
-
+export CUDA_VISIBLE_DEVICES=0
+python tools/train.py rtmdet_pose_v4.py --work-dir work_dirs/rtmdet_pose_v4_3  
 
 claude --resume c8b1e93e-f88e-4ec9-8581-858fa3521bdf
 
@@ -29,6 +29,10 @@ python tools/train.py rtmdet_pose_clean.py --work-dir work_dirs/rtmdet_pose_0212
 export CUDA_VISIBLE_DEVICES=0 
 python tools/train.py rtmdet_pose_regression.py --work-dir work_dirs/rtmdet_pose_regression/
 
+python tools/train.py rtmdet_pose_v5.py --work-dir work_dirs/rtmdet_pose_v5/
+
+
+
 如果遇到gpu崩溃，mikro这个电脑老崩
 使用：
 python tools/train.py rtmdet_pose_clean.py \
@@ -43,6 +47,9 @@ qQ947425517.
 python tools/test.py rtmdet_pose_clean.py /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_0211/best_coco_bbox_mAP_epoch_48.pth
 
 python tools/test.py rtmdet_pose_finetune.py /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_finetune/best_coco_bbox_mAP_epoch_*.pth   
+
+python tools/test.py rtmdet_pose_v4.py /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_v4_3/best_coco_bbox_mAP_epoch_77.pth   
+
 
 
 python pose_infer/inference.py \
@@ -80,6 +87,56 @@ Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.553
 02/11 13:20:25 - mmengine - INFO - Epoch(test) [1194/1194]    coco/bbox_mAP: 0.8870  coco/bbox_mAP_50: 0.9810  coco/bbox_mAP_75: 0.9480  coco/bbox_mAP_s: 0.8870  coco/bbox_mAP_m: 0.8220  coco/bbox_mAP_l: -1.0000  coco/AP: 0.5525  coco/AP .5: 0.8187  coco/AP .75: 0.4585  coco/AP (M): 0.0000  coco/AP (L): -1.0000  coco/AR: 0.5735  coco/AR .5: 0.8311  coco/AR .75: 0.4943  coco/AR (M): 0.0000  coco/AR (L): -1.0000  data_time: 0.0020  time: 0.1327
 
 
+
+============================================
+v4_2
+
+ (HeatmapHeadV4 + rtmdet_pose_v4.py)                                                                                                                                                                           
+ 重新设计 loss：                                                                                                                                                                                                                                                                                      
+   前景加权 MSE       peak 像素 ×10，背景 ×1，解决 91% 背景稀释问题                           
+
+  可见性分支        GAP→FC→sigmoid，预测每个点是否可见（BCE loss）                          
+
+  三级权重           v=0 图外: loc=0,vis=0；v=1 遮挡: loc=0.3,vis=0；v=2 可见: loc=1.0,vis=1 
+
+  per-keypoint 平均  固定除以 K=7，不随可见点数波动                                          
+ 
+  upsample_factor=2 │ 48→96×96 heatmap，减少量化误差                                    
+
+  sigma=3.0         配合 96×96，更宽容的高斯目标                                          
+
+  sigmas=[0.2]       OKS 评估容差放宽                                                
+
+
+  Loss 公式： loss = 5.0 × fg_weighted_MSE + 1.0 × BCE_vis
+V4.3
+
+  V5 (HeatmapHeadV4 
+
+  V4 的 config 基础上加数据增强：
+       改动                               内容                         
+  
+   旋转增强       RandomRotateWithPose(±20°, prob=0.5)，画布扩展不裁切 
+  
+ sigmas=[0.25] 评估容差从 0.2 → 0.25                                
+ 
+  Head/Loss 不变，和 V4 完全一样。
+
+  结果： kpt AP = 0.570（和 V4 几乎相同，旋转增强对此数据集无明显帮助
+
+v5
+
+  V5.2 (HeatmapHeadV5 + rtmdet_pose_v5.py)
+
+  在 V4 loss j加上 soft-argmax 坐标回归：
+
+  soft-argmax      heatmap × temperature(β=10) → softmax → 期望坐标，可导
+ 
+  SmoothL1 坐标 loss 直接优化预测坐标与 GT 坐标的距离                      
+
+   精确 GT 坐标      浮点坐标（无量化），比 heatmap 的整数 argmax 更精确    
+ 
+  Loss 公式： loss = 5.0 × fg_weighted_MSE + 1.0 × BCE_vis + 2.0 × SmoothL1_coord
 
 
 
