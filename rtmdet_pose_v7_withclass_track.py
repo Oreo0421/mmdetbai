@@ -65,7 +65,7 @@ model = dict(
         num_gru_layers=1,
         num_classes=1,          # binary: falling=1, not-falling=0
         loss_weight=1.0,
-        pos_weight=1.0,         # balanced BCE, no bias
+        pos_weight=5.0,         # 补偿类别不平衡 (neg:pos ≈ 930:194 ≈ 5:1)
         dropout=0.1,
     ),
     train_cfg=dict(assigner=dict(type='DynamicSoftLabelAssigner', topk=13), allowed_border=-1, pos_weight=-1, debug=False),

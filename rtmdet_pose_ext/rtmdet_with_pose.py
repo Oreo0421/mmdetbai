@@ -129,10 +129,11 @@ class RTMDetWithPose(SingleStageDetector):
         # 3. Action classification losses (if action_head is configured)
         if self.action_head is not None and self.pose_roi_extractor is not None:
             if rois.numel() > 0:
-                # 用 GT keypoints 训练 action head（避免训练初期 pose 预测是噪声）
-                kpt_features, gt_falling = self._build_action_gt(
-                    rois, batch_data_samples)
-                if kpt_features is not None:
+                # 用 pose_head 预测的 keypoints 训练（和推理一致，消除分布差异）
+                with torch.no_grad():
+                    kpt_features = self._extract_kpt_features_from_roi(roi_feats)
+                gt_falling = self._extract_falling_labels(rois, batch_data_samples)
+                if gt_falling is not None:
                     action_losses = self.action_head.loss(
                         kpt_features, gt_falling)
                     losses.update(action_losses)
@@ -206,9 +207,10 @@ class RTMDetWithPose(SingleStageDetector):
         self._attach_pose(det_results_out, roi_map, pose_kpts, pose_scores)
 
         # Action classification (single-frame, T=1)
+        # 直接用 pose_head.forward 解码到 [0,1] 归一化空间，避免 rescale 坐标不匹配
         if self.action_head is not None:
-            kpt_features = self._prepare_kpt_features_for_predict(
-                pose_kpts, pose_scores, rois)
+            with torch.no_grad():
+                kpt_features = self._extract_kpt_features_from_roi(roi_feats)
             action_probs = self.action_head.predict(kpt_features)
             self._attach_action(det_results_out, roi_map, action_probs)
 
@@ -398,9 +400,9 @@ class RTMDetWithPose(SingleStageDetector):
         device = rois.device
         K = getattr(self.pose_head, 'num_keypoints', 7)
 
-        kpt_features = torch.zeros(num_rois, 1, K * 3, device=device)
-        gt_falling = torch.zeros(num_rois, device=device)
-        has_any = False
+        # 只收集成功匹配到 GT 的 RoI（未匹配的不参与 action loss）
+        valid_features = []
+        valid_falling = []
 
         for i in range(num_rois):
             img_idx = int(rois[i, 0])
@@ -425,11 +427,6 @@ class RTMDetWithPose(SingleStageDetector):
             if float(max_iou.item()) < 0.1:
                 continue
             idx = int(gt_idx.item())
-
-            # Falling label
-            falling = getattr(gt_instances, 'falling', None)
-            if falling is not None and idx < len(falling):
-                gt_falling[i] = falling[idx]
 
             # GT keypoints → 归一化到 [0,1] relative to RoI
             gt_kpts = getattr(gt_instances, 'keypoints', None)
@@ -458,56 +455,97 @@ class RTMDetWithPose(SingleStageDetector):
             vis = (vis >= 2).float() + (vis == 1).float() * 0.5
 
             feat = torch.stack([norm_x, norm_y, vis], dim=-1)  # (K, 3)
-            kpt_features[i, 0] = feat.reshape(-1)  # (K*3,)
+
+            # Falling label
+            falling_val = 0.0
+            falling = getattr(gt_instances, 'falling', None)
+            if falling is not None and idx < len(falling):
+                falling_val = float(falling[idx])
+
+            valid_features.append(feat.reshape(-1))  # (K*3,)
+            valid_falling.append(falling_val)
+
+        if len(valid_features) == 0:
+            return None, None
+
+        kpt_features = torch.stack(valid_features).unsqueeze(1)  # (M, 1, K*3)
+        gt_falling = torch.tensor(valid_falling, device=device)  # (M,)
+        return kpt_features, gt_falling
+
+    def _extract_falling_labels(self, rois, batch_data_samples):
+        """Extract GT falling labels for each RoI via IoU matching.
+
+        Returns:
+            gt_falling: (N,) falling labels, or None if no matches.
+        """
+        num_rois = rois.size(0)
+        device = rois.device
+        gt_falling = torch.zeros(num_rois, device=device)
+        has_any = False
+
+        for i in range(num_rois):
+            img_idx = int(rois[i, 0])
+            if img_idx >= len(batch_data_samples):
+                continue
+            ds = batch_data_samples[img_idx]
+            gt_instances = getattr(ds, 'gt_instances', None)
+            if gt_instances is None or len(gt_instances) == 0:
+                continue
+
+            gt_bboxes = getattr(gt_instances, 'bboxes', None)
+            if gt_bboxes is None or len(gt_bboxes) == 0:
+                continue
+            gt_bboxes_t = get_box_tensor(gt_bboxes).to(device=device)
+            if gt_bboxes_t.numel() == 0:
+                continue
+
+            roi_box = rois[i, 1:].unsqueeze(0)
+            ious = bbox_overlaps(roi_box, gt_bboxes_t)
+            max_iou, gt_idx = ious.max(dim=1)
+            if float(max_iou.item()) < 0.1:
+                continue
+            idx = int(gt_idx.item())
+
+            falling = getattr(gt_instances, 'falling', None)
+            if falling is not None and idx < len(falling):
+                gt_falling[i] = falling[idx]
             has_any = True
 
         if not has_any:
-            return None, None
-        return kpt_features, gt_falling
+            return None
+        return gt_falling
 
-    def _prepare_kpt_features_for_predict(self, pose_kpts, pose_scores, rois):
-        """Normalize predicted keypoints relative to RoI box for action prediction.
+    def _extract_kpt_features_from_roi(self, roi_feats):
+        """Extract normalized keypoint features from pose_head for action inference.
 
-        Handles invisible keypoints: points outside the RoI or with low
-        visibility scores get vis=0 and coordinates zeroed out, matching
-        the GT encoding used during training.
+        直接用 pose_head.forward 在 RoI 特征空间解码，输出 [0,1] 归一化坐标。
+        避免 rescale 后 keypoint 坐标和 RoI 坐标空间不匹配的问题。
+        和训练时 _build_action_gt 的编码方式一致。
 
         Args:
-            pose_kpts: (N, K, 2) in image coordinates.
-            pose_scores: (N, K) visibility scores from pose_head.
-            rois: (N, 5) [batch_idx, x1, y1, x2, y2].
+            roi_feats: (N, C, H, W) RoI-aligned features.
 
         Returns:
-            kpt_features: (N, 1, K*3) normalized.
+            kpt_features: (N, 1, K*3) normalized [norm_x, norm_y, vis].
         """
-        x1 = rois[:, 1].unsqueeze(1)  # (N, 1)
-        y1 = rois[:, 2].unsqueeze(1)
-        x2 = rois[:, 3].unsqueeze(1)
-        y2 = rois[:, 4].unsqueeze(1)
-        roi_w = (x2 - x1).clamp(min=1.0)
-        roi_h = (y2 - y1).clamp(min=1.0)
+        x_logits, y_logits, vis_logits = self.pose_head.forward(roi_feats)
 
-        # Normalize to [0, 1] relative to RoI
-        raw_x = (pose_kpts[:, :, 0] - x1) / roi_w  # (N, K)
-        raw_y = (pose_kpts[:, :, 1] - y1) / roi_h  # (N, K)
+        scale = getattr(self.pose_head, 'simdr_scale', 2)
+        feat_w = x_logits.size(-1) // scale  # e.g. 48
+        feat_h = y_logits.size(-1) // scale
 
-        # 检测超出 RoI 范围的关键点 → invisible
-        out_of_bounds = (raw_x < -0.1) | (raw_x > 1.1) | \
-                        (raw_y < -0.1) | (raw_y > 1.1)  # (N, K)
+        # argmax → 归一化到 [0, 1]（在 RoI 内的相对位置）
+        pred_x = x_logits.argmax(dim=-1).float() / scale / feat_w  # (N, K) ∈ [0,1]
+        pred_y = y_logits.argmax(dim=-1).float() / scale / feat_h  # (N, K) ∈ [0,1]
+        pred_vis = torch.sigmoid(vis_logits)  # (N, K) ∈ [0,1]
 
-        # 和训练保持一致的 visibility 编码:
-        # pose_scores (sigmoid of vis_logits) ∈ [0, 1]
-        # 高分→可见(~1.0), 低分→遮挡(~0.5→0), 超出范围→0
-        vis = pose_scores.clone()
-        vis[out_of_bounds] = 0.0
+        # 超出 [0,1] 的点标记为不可见
+        oob = (pred_x < 0) | (pred_x > 1) | (pred_y < 0) | (pred_y > 1)
+        pred_x = pred_x.clamp(0, 1)
+        pred_y = pred_y.clamp(0, 1)
+        pred_vis[oob] = 0.0
 
-        norm_x = raw_x.clamp(0, 1)
-        norm_y = raw_y.clamp(0, 1)
-        # 不可见的点坐标也置零，避免噪声干扰
-        norm_x[out_of_bounds] = 0.0
-        norm_y[out_of_bounds] = 0.0
-
-        kpt = torch.stack([norm_x, norm_y, vis], dim=-1)  # (N, K, 3)
+        kpt = torch.stack([pred_x, pred_y, pred_vis], dim=-1)  # (N, K, 3)
         return kpt.reshape(kpt.size(0), 1, -1)  # (N, 1, K*3)
 
     def _attach_action(self, det_results, roi_map, action_probs):

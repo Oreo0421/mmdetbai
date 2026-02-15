@@ -45,6 +45,14 @@ def parse_args():
                         help='关键点置信度阈值')
     parser.add_argument('--fall-thr', type=float, default=0.5,
                         help='跌倒分类阈值')
+    parser.add_argument('--motion-thr', type=float, default=0.03,
+                        help='关键点运动幅度阈值，低于此值视为静止')
+    parser.add_argument('--stable-frames', type=int, default=3,
+                        help='连续静止帧数超过此值触发抑制检查')
+    parser.add_argument('--spike-window', type=int, default=15,
+                        help='回看N帧检查是否有运动高峰(摔倒动作)')
+    parser.add_argument('--spike-thr', type=float, default=0.06,
+                        help='运动高峰阈值，超过此值说明最近有摔倒动作')
     parser.add_argument('--use-tracker', action='store_true',
                         help='启用 ByteTrack 跟踪 + 时序 GRU (视频/连续帧)')
     parser.add_argument('--max-seq-len', type=int, default=30,
@@ -125,8 +133,15 @@ def inference_single(model, img_path, pipeline):
     return results, img
 
 
-def visualize(img, pred, args, track_id=None, temporal_score=None):
-    """可视化检测框 + 关键点 + 跌倒状态"""
+COLOR_LYING = (255, 165, 0)    # 橙色 - 躺着(被抑制的跌倒)
+
+def visualize(img, pred, args, track_id=None, temporal_score=None,
+              raw_score=None):
+    """可视化检测框 + 关键点 + 跌倒状态
+
+    Args:
+        raw_score: GRU原始分数(未抑制), 用于区分 lying vs normal
+    """
     img_vis = img.copy()
 
     bboxes = pred.bboxes.cpu().numpy()
@@ -140,21 +155,32 @@ def visualize(img, pred, args, track_id=None, temporal_score=None):
         act_score = temporal_score if temporal_score is not None else action_scores[idx]
         is_falling = act_score >= args.fall_thr
 
-        # 框颜色: 跌倒=红, 正常=绿
-        box_color = COLOR_FALLING if is_falling else COLOR_NORMAL
-        if track_id is not None:
+        # 判断是否被运动抑制 (raw_score高但act_score被衰减 → lying)
+        is_suppressed = (raw_score is not None
+                         and raw_score >= args.fall_thr
+                         and not is_falling)
+
+        # 框颜色: 跌倒=红, 躺着=橙, 正常=绿
+        if is_falling:
+            box_color = COLOR_FALLING
+        elif is_suppressed:
+            box_color = COLOR_LYING
+        else:
+            box_color = COLOR_NORMAL
+        if track_id is not None and not is_falling and not is_suppressed:
             box_color = COLOR_TRACK[track_id % len(COLOR_TRACK)]
-            if is_falling:
-                box_color = COLOR_FALLING
 
         x1, y1, x2, y2 = map(int, bboxes[idx][:4])
         cv2.rectangle(img_vis, (x1, y1), (x2, y2), box_color, args.thickness)
 
         # 标签文字
         label_parts = [f'{det_score:.2f}']
-        if act_score > 0:
-            status = 'FALLING' if is_falling else 'normal'
-            label_parts.append(f'{status}({act_score:.2f})')
+        if is_falling:
+            label_parts.append(f'FALLING({act_score:.2f})')
+        elif is_suppressed:
+            label_parts.append(f'LYING({raw_score:.2f})')
+        elif act_score > 0:
+            label_parts.append(f'normal({act_score:.2f})')
         if track_id is not None:
             label_parts.insert(0, f'ID:{track_id}')
         label = ' '.join(label_parts)
@@ -204,15 +230,27 @@ def visualize(img, pred, args, track_id=None, temporal_score=None):
 class SimpleTracker:
     """Lightweight tracker wrapper for inference."""
 
-    def __init__(self, model, tracker_cfg, max_seq_len=30):
+    def __init__(self, model, tracker_cfg, max_seq_len=30,
+                 motion_thr=0.03, stable_frames=3, spike_window=15,
+                 spike_thr=0.06):
         self.model = model
         self.tracker = MODELS.build(tracker_cfg)
         self.max_seq_len = max_seq_len
-        self.kpt_buffers = {}  # track_id -> deque
+        self.kpt_buffers = {}    # track_id -> deque of (K*3,) features
+        self.prev_kpts = {}      # track_id -> previous (K,2) normalized kpts
+        self.stable_count = {}   # track_id -> consecutive stable frame count
+        self.motion_hist = {}    # track_id -> deque of per-frame motion values
+        self.motion_thr = motion_thr      # 静止判定阈值
+        self.stable_frames = stable_frames  # 连续静止帧数
+        self.spike_window = spike_window  # 回看窗口(帧)
+        self.spike_thr = spike_thr        # 运动高峰阈值(摔倒动作)
 
     def reset(self):
         self.tracker.reset()
         self.kpt_buffers.clear()
+        self.prev_kpts.clear()
+        self.stable_count.clear()
+        self.motion_hist.clear()
 
     @torch.no_grad()
     def process(self, img_path, pipeline, frame_id):
@@ -286,15 +324,50 @@ class SimpleTracker:
                 feat = torch.stack([norm_x, norm_y, vis_clean], dim=-1).reshape(-1)
                 self.kpt_buffers[tid].append(feat)
 
+                # --- Motion check: lying still vs fell-then-still ---
+                cur_xy = torch.stack([norm_x, norm_y], dim=-1)  # (K, 2)
+                if tid not in self.motion_hist:
+                    self.motion_hist[tid] = collections.deque(
+                        maxlen=self.spike_window)
+
+                if tid in self.prev_kpts:
+                    motion = (cur_xy - self.prev_kpts[tid]).abs().mean().item()
+                    if motion < self.motion_thr:
+                        self.stable_count[tid] = self.stable_count.get(tid, 0) + 1
+                    else:
+                        self.stable_count[tid] = 0
+                else:
+                    motion = 0.0
+                    self.stable_count[tid] = 0
+                self.prev_kpts[tid] = cur_xy.clone()
+                self.motion_hist[tid].append(motion)
+
                 seq = torch.stack(list(self.kpt_buffers[tid])).unsqueeze(0).to(device)
                 prob = self.model.action_head.predict(seq)
-                temporal_scores[tid] = float(prob.squeeze())
+                score = float(prob.squeeze())
+                raw_score = score
+
+                # 抑制逻辑:
+                #   当前静止 + GRU说跌倒 → 检查最近有没有运动高峰
+                #   有高峰 = 真摔倒(倒下后躺着) → 保留分数
+                #   无高峰 = 一直躺着/坐着 → 抑制分数
+                if self.stable_count.get(tid, 0) >= self.stable_frames:
+                    peak = max(self.motion_hist[tid])
+                    if peak < self.spike_thr:
+                        # 最近N帧从未有大运动 → 一直躺/坐 → 抑制
+                        score = score * 0.1
+                    # else: 有运动高峰 → 真摔倒后静止 → 不抑制
+
+                temporal_scores[tid] = (score, raw_score)
 
         # Clean stale tracks
         active = set(track_inst.instances_id.tolist()) if num_tracks > 0 else set()
         for tid in list(self.kpt_buffers.keys()):
             if tid not in active:
                 del self.kpt_buffers[tid]
+                self.prev_kpts.pop(tid, None)
+                self.stable_count.pop(tid, None)
+                self.motion_hist.pop(tid, None)
 
         return img, track_inst, temporal_scores
 
@@ -326,7 +399,11 @@ def run_images(model, args):
         cfg = Config.fromfile(args.config)
         tracker_cfg = cfg.get('tracker', None)
         if tracker_cfg is not None:
-            tracker = SimpleTracker(model, tracker_cfg, args.max_seq_len)
+            tracker = SimpleTracker(model, tracker_cfg, args.max_seq_len,
+                              motion_thr=args.motion_thr,
+                              stable_frames=args.stable_frames,
+                              spike_window=args.spike_window,
+                              spike_thr=args.spike_thr)
             print("ByteTrack + temporal GRU enabled")
 
     success = 0
@@ -347,7 +424,9 @@ def run_images(model, args):
             img_vis = img.copy()
             for t_idx in range(len(track_inst)):
                 tid = int(track_inst.instances_id[t_idx])
-                t_score = temporal_scores.get(tid, 0.0)
+                score_pair = temporal_scores.get(tid, (0.0, 0.0))
+                t_score, t_raw = (score_pair if isinstance(score_pair, tuple)
+                                  else (score_pair, score_pair))
                 is_fall = t_score >= args.fall_thr
 
                 # Create a single-instance pred for visualization
@@ -361,13 +440,14 @@ def run_images(model, args):
                 single.action_scores = torch.tensor([t_score])
 
                 img_vis = visualize(img_vis, single, args,
-                                    track_id=tid, temporal_score=t_score)
+                                    track_id=tid, temporal_score=t_score,
+                                    raw_score=t_raw)
                 if is_fall:
                     fall_count += 1
 
             n_tracks = len(track_inst)
             print(f"{n_tracks} tracks, "
-                  f"scores={[f'{temporal_scores.get(int(track_inst.instances_id[j]),0):.2f}' for j in range(n_tracks)]}")
+                  f"scores={[f'{temporal_scores.get(int(track_inst.instances_id[j]),(0,0))[0]:.2f}' for j in range(n_tracks)]}")
 
         else:
             # Single-frame mode (no tracker)
@@ -429,7 +509,11 @@ def run_video(model, args):
     tracker_cfg = cfg.get('tracker', None)
     tracker = None
     if tracker_cfg is not None:
-        tracker = SimpleTracker(model, tracker_cfg, args.max_seq_len)
+        tracker = SimpleTracker(model, tracker_cfg, args.max_seq_len,
+                              motion_thr=args.motion_thr,
+                              stable_frames=args.stable_frames,
+                              spike_window=args.spike_window,
+                              spike_thr=args.spike_thr)
         print("ByteTrack + temporal GRU enabled")
 
     # Video writer
@@ -461,7 +545,9 @@ def run_video(model, args):
                 has_fall = False
                 for t_idx in range(len(track_inst)):
                     tid = int(track_inst.instances_id[t_idx])
-                    t_score = temporal_scores.get(tid, 0.0)
+                    score_pair = temporal_scores.get(tid, (0.0, 0.0))
+                    t_score, t_raw = (score_pair if isinstance(score_pair, tuple)
+                                      else (score_pair, score_pair))
                     if t_score >= args.fall_thr:
                         has_fall = True
 
@@ -474,7 +560,8 @@ def run_video(model, args):
                         single.keypoint_scores = track_inst.keypoint_scores[t_idx:t_idx+1]
                     single.action_scores = torch.tensor([t_score])
                     img_vis = visualize(img_vis, single, args,
-                                        track_id=tid, temporal_score=t_score)
+                                        track_id=tid, temporal_score=t_score,
+                                        raw_score=t_raw)
 
                 if has_fall:
                     fall_frames += 1
