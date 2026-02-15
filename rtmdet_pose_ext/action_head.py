@@ -2,19 +2,19 @@
 """
 ActionTemporalHead: GRU-based temporal action classifier on keypoint sequences.
 
-Architecture:
+Architecture (V9):
   Per-frame encoder: Linear(K*3, 64) + ReLU + Linear(64, 64) + ReLU
-  Temporal GRU:      GRU(64, 64, 1 layer) — skipped when T=1
+  Temporal GRU:      GRU(64, 64, 1 layer) + LayerNorm
+  Residual:          GRU output + last frame encoder output (skip connection)
   Classifier:        Linear(64, num_classes)
 
-Training (single-frame, T=1):
-  - Receives normalized keypoints from pose_head output
-  - 10-class action classification (CrossEntropy loss)
-  - GRU bypassed, encoder output goes directly to classifier
+V8 mode (skip_gru_t1=True, default):
+  T=1 → GRU bypassed, encoder output goes directly to classifier
 
-Inference with tracker (T>1):
-  - Keypoints buffered per track_id over multiple frames
-  - GRU processes full sequence for temporal action prediction
+V9 mode (skip_gru_t1=False):
+  T=any → always use GRU + residual, even for single frames
+  This ensures training (T=8), validation (T=1), and inference (T=1~30)
+  all use the same pathway.
 """
 import torch
 import torch.nn as nn
@@ -41,6 +41,17 @@ ACTION_CLASSES = [
 
 FALLING_CLASS_IDS = {6, 7, 8, 9}
 
+# ---- V10: Bone skeleton connections ----
+# head(0), shoulder(1), hand_R(2), hand_L(3), hips(4), foot_R(5), foot_L(6)
+BONE_CONNECTIONS = [
+    (0, 1),  # head → shoulder (neck)
+    (1, 2),  # shoulder → hand_right (right arm)
+    (1, 3),  # shoulder → hand_left (left arm)
+    (1, 4),  # shoulder → hips (torso)
+    (4, 5),  # hips → foot_right (right leg)
+    (4, 6),  # hips → foot_left (left leg)
+]
+
 
 @MODELS.register_module(force=True)
 class ActionTemporalHead(nn.Module):
@@ -57,6 +68,15 @@ class ActionTemporalHead(nn.Module):
         pos_weight: Positive class weight for BCE (binary mode only).
         class_weight: Per-class weights for CrossEntropy (multi-class mode).
         dropout: Dropout rate in encoder (default: 0.1).
+        temporal_residual: Add skip connection (encoder + GRU) for stable
+            temporal training. Default: True.
+        skip_gru_t1: Skip GRU when T=1. True for V8 backward compat,
+            False for V9 (always use GRU). Default: True.
+        bone_mode: If True, input features are bone/skeleton features (V10)
+            instead of raw keypoint features. Affects inference fallback.
+            Default: False.
+        appearance_dim: Dimension of RoI appearance features to concat (V11).
+            0 = disabled (backward compatible). Default: 0.
     """
 
     def __init__(
@@ -71,6 +91,10 @@ class ActionTemporalHead(nn.Module):
         pos_weight: float = 1.0,
         class_weight: Optional[List[float]] = None,
         dropout: float = 0.1,
+        temporal_residual: bool = True,
+        skip_gru_t1: bool = True,
+        bone_mode: bool = False,
+        appearance_dim: int = 0,
     ):
         super().__init__()
         self.num_keypoints = num_keypoints
@@ -78,8 +102,12 @@ class ActionTemporalHead(nn.Module):
         self.num_classes = num_classes
         self.loss_weight = loss_weight
         self.hidden_dim = hidden_dim
+        self.temporal_residual = temporal_residual
+        self.skip_gru_t1 = skip_gru_t1
+        self.bone_mode = bone_mode
+        self.appearance_dim = appearance_dim
 
-        input_dim = num_keypoints * kpt_dim  # 7 * 3 = 21
+        input_dim = num_keypoints * kpt_dim + appearance_dim  # V11: 36+96=132
 
         # Per-frame encoder
         self.encoder = nn.Sequential(
@@ -90,7 +118,7 @@ class ActionTemporalHead(nn.Module):
             nn.ReLU(inplace=True),
         )
 
-        # Temporal GRU (used when T > 1)
+        # Temporal GRU
         self.gru = nn.GRU(
             input_size=embed_dim,
             hidden_size=hidden_dim,
@@ -98,6 +126,9 @@ class ActionTemporalHead(nn.Module):
             batch_first=True,
             dropout=dropout if num_gru_layers > 1 else 0,
         )
+
+        # LayerNorm on GRU output for stable training
+        self.gru_norm = nn.LayerNorm(hidden_dim)
 
         # Classifier
         self.classifier = nn.Linear(hidden_dim, num_classes)
@@ -121,8 +152,6 @@ class ActionTemporalHead(nn.Module):
 
         Args:
             kpt_features: (N, T, K*D) normalized keypoint features.
-                T=1 for single-frame training.
-                T>1 for temporal inference with tracker.
 
         Returns:
             logits: (N, num_classes)
@@ -133,13 +162,21 @@ class ActionTemporalHead(nn.Module):
         encoded = self.encoder(kpt_features.reshape(N * T, D))
         encoded = encoded.reshape(N, T, -1)  # (N, T, embed_dim)
 
-        if T == 1:
-            # Single frame: skip GRU, use encoder output directly
+        if T == 1 and self.skip_gru_t1:
+            # V8 behavior: skip GRU, use encoder output directly
             out = encoded.squeeze(1)  # (N, embed_dim)
         else:
-            # Temporal: run GRU, take last hidden state
+            # Temporal path: GRU + LayerNorm
             _, h_n = self.gru(encoded)
-            out = h_n[-1]  # (N, hidden_dim)
+            gru_out = self.gru_norm(h_n[-1])  # (N, hidden_dim)
+
+            if self.temporal_residual:
+                # Residual: last frame's encoder output + GRU temporal context
+                # This ensures the classifier always gets useful encoder features,
+                # even when GRU weights are freshly initialized.
+                out = encoded[:, -1, :] + gru_out
+            else:
+                out = gru_out
 
         return self.classifier(out)  # (N, num_classes)
 
@@ -156,11 +193,16 @@ class ActionTemporalHead(nn.Module):
         logits = self.forward(kpt_features)  # (N, num_classes)
 
         if self.num_classes == 1:
-            loss = F.binary_cross_entropy_with_logits(
-                logits.squeeze(-1),
-                gt_labels.float(),
-                pos_weight=self.pos_weight,
-            )
+            # Filter out invalid labels (-1) for binary mode
+            valid = gt_labels >= 0
+            if valid.any():
+                loss = F.binary_cross_entropy_with_logits(
+                    logits.squeeze(-1)[valid],
+                    gt_labels[valid].float(),
+                    pos_weight=self.pos_weight,
+                )
+            else:
+                loss = logits.sum() * 0.0
         else:
             # Filter out invalid labels (action_class == -1)
             valid = gt_labels >= 0

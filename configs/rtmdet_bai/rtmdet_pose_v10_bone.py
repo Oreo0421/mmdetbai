@@ -1,22 +1,22 @@
 custom_imports = dict(imports=['rtmdet_pose_ext'], allow_failed_imports=False)
 default_scope = 'mmdet'
 
-data_root = '/home/tbai/Desktop/sensir_coco/'
+data_root = '/home/tbai/Desktop/sensir_coco_v10/'
 num_classes = 1
 img_scale = (384, 384)
 max_epochs = 50
 
 # ========= 10 Action Classes =========
-# 0: Standing still (1A-1)       → not-falling
-# 1: Walking (1A-2)              → not-falling
-# 2: Sitting down (1A-3)         → not-falling
-# 3: Standing up (1A-4)          → not-falling
-# 4: Lying down (1A-5)           → not-falling
-# 5: Getting up (1A-6)           → not-falling
-# 6: Falling walking (1A-7)      → falling
-# 7: Falling standing (1A-8)     → falling
-# 8: Falling sitting (1A-9)      → falling
-# 9: Falling standing up (1A-10) → falling
+# 0: Standing still (1A-1)       -> not-falling
+# 1: Walking (1A-2)              -> not-falling
+# 2: Sitting down (1A-3)         -> not-falling
+# 3: Standing up (1A-4)          -> not-falling
+# 4: Lying down (1A-5)           -> not-falling
+# 5: Getting up (1A-6)           -> not-falling
+# 6: Falling walking (1A-7)      -> falling
+# 7: Falling standing (1A-8)     -> falling
+# 8: Falling sitting (1A-9)      -> falling
+# 9: Falling standing up (1A-10) -> falling
 
 model = dict(
     type='RTMDetWithPose',
@@ -54,20 +54,27 @@ model = dict(
         match_iou_thr=0.1,
         log_stats=True,
         log_interval=20),
-    # ========= Action Classification Head (10-class) =========
+    # ========= Action Classification Head (10-class, V10 bone features) =========
+    # V10: Bone/skeleton features instead of raw keypoints
+    # 6 bones × 6 features (dx, dy, angle, length, d_angle, d_length) = 36 dim
+    # bone_mode=True: inference fallback computes bones from predicted keypoints
     action_head=dict(
         type='ActionTemporalHead',
-        num_keypoints=7,
-        kpt_dim=3,              # x, y, visibility_score
+        num_keypoints=6,            # 6 bones (not keypoints)
+        kpt_dim=6,                  # dx, dy, angle, length, d_angle, d_length
         embed_dim=64,
         hidden_dim=64,
         num_gru_layers=1,
-        num_classes=10,         # 10-class action recognition
+        num_classes=10,
         loss_weight=1.0,
-        class_weight=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                      4.0, 4.0, 4.0, 4.0],  # 跌倒类加权
+        class_weight=[1.0, 1.0, 1.0, 1.0, 2.0, 2.0,
+                      8.0, 8.0, 8.0, 8.0],
         dropout=0.1,
+        temporal_residual=True,
+        skip_gru_t1=False,
+        bone_mode=True,
     ),
+    freeze_det_pose=True,   # V10: freeze backbone/neck/bbox_head/pose_head, only train action_head
     train_cfg=dict(assigner=dict(type='DynamicSoftLabelAssigner', topk=13), allowed_border=-1, pos_weight=-1, debug=False),
     test_cfg=dict(nms_pre=1000, score_thr=0.3, nms=dict(type='nms', iou_threshold=0.45), max_per_img=100))
 
@@ -142,7 +149,6 @@ val_evaluator = [
         pred_converter=dict(id='id', num_keypoints=7, mapping=[(0,0),(1,1),(2,2),(3,3),(4,4),(5,5),(6,6)]),
         gt_converter=dict(id='id', num_keypoints=7, mapping=[(0,0),(1,1),(2,2),(3,3),(4,4),(5,5),(6,6)]),
     ),
-    # ========= Action Classification Metric (10-class + binary falling) =========
     dict(
         type='ActionMetric',
         ann_file=data_root + 'annotations/instances_val.json',
@@ -171,5 +177,7 @@ env_cfg = dict(cudnn_benchmark=False, mp_cfg=dict(mp_start_method='fork', opencv
 visualizer = dict(type='DetLocalVisualizer', vis_backends=[dict(type='LocalVisBackend'), dict(type='TensorboardVisBackend')], name='visualizer')
 log_processor = dict(type='LogProcessor', window_size=50, by_epoch=True)
 log_level = 'INFO'
-load_from = None
+# Load V6 best checkpoint: backbone, neck, bbox_head, pose_head well-trained
+# (bbox=0.866, kpt=0.802). action_head is fully new (random init).
+load_from = 'work_dirs/rtmdet_pose_v6/best_coco_bbox_mAP_epoch_75.pth'
 resume = False

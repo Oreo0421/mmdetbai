@@ -7,16 +7,16 @@ img_scale = (384, 384)
 max_epochs = 50
 
 # ========= 10 Action Classes =========
-# 0: Standing still (1A-1)       → not-falling
-# 1: Walking (1A-2)              → not-falling
-# 2: Sitting down (1A-3)         → not-falling
-# 3: Standing up (1A-4)          → not-falling
-# 4: Lying down (1A-5)           → not-falling
-# 5: Getting up (1A-6)           → not-falling
-# 6: Falling walking (1A-7)      → falling
-# 7: Falling standing (1A-8)     → falling
-# 8: Falling sitting (1A-9)      → falling
-# 9: Falling standing up (1A-10) → falling
+# 0: Standing still (1A-1)       -> not-falling
+# 1: Walking (1A-2)              -> not-falling
+# 2: Sitting down (1A-3)         -> not-falling
+# 3: Standing up (1A-4)          -> not-falling
+# 4: Lying down (1A-5)           -> not-falling
+# 5: Getting up (1A-6)           -> not-falling
+# 6: Falling walking (1A-7)      -> falling
+# 7: Falling standing (1A-8)     -> falling
+# 8: Falling sitting (1A-9)      -> falling
+# 9: Falling standing up (1A-10) -> falling
 
 model = dict(
     type='RTMDetWithPose',
@@ -54,19 +54,25 @@ model = dict(
         match_iou_thr=0.1,
         log_stats=True,
         log_interval=20),
-    # ========= Action Classification Head (10-class) =========
+    # ========= Action Classification Head (10-class, V9 temporal) =========
+    # V9: GRU trained with T=8 GT keypoint sequences
+    # skip_gru_t1=False: always use GRU (even T=1 during val), consistent pathway
+    # temporal_residual=True: encoder + GRU skip connection for stable training
     action_head=dict(
         type='ActionTemporalHead',
         num_keypoints=7,
-        kpt_dim=3,              # x, y, visibility_score
+        kpt_dim=5,              # x, y, visibility_score, dx, dy (velocity)
         embed_dim=64,
         hidden_dim=64,
         num_gru_layers=1,
         num_classes=10,         # 10-class action recognition
         loss_weight=1.0,
-        class_weight=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                      4.0, 4.0, 4.0, 4.0],  # 跌倒类加权
+        # Weights: Lying down(2), Getting up(2) also hard to learn
+        class_weight=[1.0, 1.0, 1.0, 1.0, 2.0, 2.0,
+                      8.0, 8.0, 8.0, 8.0],  # falling 8x, hard non-fall 2x
         dropout=0.1,
+        temporal_residual=True,
+        skip_gru_t1=False,      # V9: always use GRU pathway
     ),
     train_cfg=dict(assigner=dict(type='DynamicSoftLabelAssigner', topk=13), allowed_border=-1, pos_weight=-1, debug=False),
     test_cfg=dict(nms_pre=1000, score_thr=0.3, nms=dict(type='nms', iou_threshold=0.45), max_per_img=100))
@@ -171,5 +177,7 @@ env_cfg = dict(cudnn_benchmark=False, mp_cfg=dict(mp_start_method='fork', opencv
 visualizer = dict(type='DetLocalVisualizer', vis_backends=[dict(type='LocalVisBackend'), dict(type='TensorboardVisBackend')], name='visualizer')
 log_processor = dict(type='LogProcessor', window_size=50, by_epoch=True)
 log_level = 'INFO'
-load_from = None
+# Load V8 pre-trained weights: backbone, neck, bbox_head, pose_head, encoder+classifier
+# are already trained. Only GRU + gru_norm are new (randomly initialized).
+load_from = 'work_dirs/rtmdet_pose_v6/best_coco_bbox_mAP_epoch_75.pth'
 resume = False

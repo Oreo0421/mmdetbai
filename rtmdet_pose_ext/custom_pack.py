@@ -112,4 +112,32 @@ class PackDetInputsWithPose(PackDetInputs):
                 gt_instances.action_class = action_t
                 gt_instances.falling = falling_t
 
+                # V9: pack temporal kpt_sequence into gt_instances
+                kpt_sequences = []
+                has_seq = False
+                for inst in results['instances']:
+                    seq = inst.get('kpt_sequence', None)
+                    if seq is not None and len(seq) > 0:
+                        kpt_sequences.append(seq)
+                        has_seq = True
+                    else:
+                        kpt_sequences.append(None)
+
+                if has_seq:
+                    # Dynamic feature dim: 21 (K*3) or 35 (K*5 with velocity)
+                    first_seq = next(
+                        s for s in kpt_sequences if s is not None)
+                    KD = len(first_seq[0])
+                    max_T = max(
+                        len(s) for s in kpt_sequences if s is not None)
+                    packed_seqs = torch.zeros(
+                        N, max_T, KD, dtype=torch.float32)
+                    for i, seq in enumerate(kpt_sequences):
+                        if seq is not None and i < N:
+                            T = len(seq)
+                            for t in range(T):
+                                packed_seqs[i, t] = torch.tensor(
+                                    seq[t], dtype=torch.float32)
+                    gt_instances.kpt_sequence = packed_seqs
+
         return packed

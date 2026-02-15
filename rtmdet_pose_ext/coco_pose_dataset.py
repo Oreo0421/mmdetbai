@@ -39,6 +39,9 @@ class CocoPoseDataset(CocoDataset):
                             # 向后兼容：回退到 falling 属性
                             inst['falling'] = int(attributes.get('falling', 0))
                             inst['action_class'] = -1  # unknown
+                        # V9: temporal keypoint sequence
+                        if 'kpt_sequence' in attributes:
+                            inst['kpt_sequence'] = attributes['kpt_sequence']
                     else:
                         inst['falling'] = 0
                         inst['action_class'] = -1

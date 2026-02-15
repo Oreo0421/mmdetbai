@@ -42,6 +42,7 @@ class RTMDetWithPose(SingleStageDetector):
         pose_min_box_size: float = 2.0,
         pose_use_gt_box: bool = True,
         action_head: OptConfigType = None,
+        freeze_det_pose: bool = False,
         train_cfg: OptConfigType = None,
         test_cfg: OptConfigType = None,
         data_preprocessor: OptConfigType = None,
@@ -73,6 +74,16 @@ class RTMDetWithPose(SingleStageDetector):
         self.action_head = (
             MODELS.build(action_head) if action_head is not None else None
         )
+
+        # Freeze backbone/neck/bbox_head/pose_head: only train action_head
+        if freeze_det_pose and self.action_head is not None:
+            frozen = 0
+            for name, param in self.named_parameters():
+                if 'action_head' not in name:
+                    param.requires_grad = False
+                    frozen += 1
+            print(f'[freeze_det_pose] Frozen {frozen} params, '
+                  f'only action_head is trainable.')
     
     def loss(self, batch_inputs: Tensor, batch_data_samples: SampleList) -> dict:
         """Calculate detection + pose estimation losses.
@@ -128,17 +139,64 @@ class RTMDetWithPose(SingleStageDetector):
 
         # 3. Action classification losses (if action_head is configured)
         if self.action_head is not None and self.pose_roi_extractor is not None:
+            appearance_dim = getattr(self.action_head, 'appearance_dim', 0)
             if rois.numel() > 0:
-                # 用 pose_head 预测的 keypoints 训练（和推理一致，消除分布差异）
-                with torch.no_grad():
-                    kpt_features = self._extract_kpt_features_from_roi(roi_feats)
-                gt_action = self._extract_action_labels(rois, batch_data_samples)
-                if gt_action is not None:
+                # V9: try temporal GT keypoint sequences (T>1)
+                kpt_seq, gt_action = self._extract_temporal_action_data(
+                    rois, batch_data_samples)
+                if kpt_seq is not None:
+                    # V11: concat GAP appearance features
+                    if appearance_dim > 0:
+                        gap = self._extract_gap_features(
+                            roi_feats, rois, batch_data_samples)
+                        if gap is not None:
+                            N, T, _ = kpt_seq.shape
+                            # Truncate/project GAP to appearance_dim
+                            app_feat = gap[:, :appearance_dim]  # (N, app_dim)
+                            app_expanded = app_feat.unsqueeze(1).expand(
+                                N, T, appearance_dim)
+                            kpt_seq = torch.cat(
+                                [kpt_seq, app_expanded], dim=-1)
+                    # V12: binary label mapping (num_classes==1)
+                    if self.action_head.num_classes == 1:
+                        valid_mask = gt_action >= 0
+                        binary = (gt_action >= 6).long()
+                        gt_action = torch.where(
+                            valid_mask, binary,
+                            torch.full_like(gt_action, -1))
                     action_losses = self.action_head.loss(
-                        kpt_features, gt_action)
+                        kpt_seq, gt_action)
                     losses.update(action_losses)
                 else:
-                    losses['loss_action'] = x[0].sum() * 0
+                    # V8 fallback: single-frame pose_head features
+                    with torch.no_grad():
+                        kpt_features = self._extract_kpt_features_from_roi(
+                            roi_feats)
+                    # V11: concat GAP appearance features (fallback path)
+                    if appearance_dim > 0:
+                        gap = self._extract_gap_features(
+                            roi_feats, rois, batch_data_samples)
+                        if gap is not None:
+                            N = kpt_features.size(0)
+                            app_feat = gap[:, :appearance_dim]
+                            app_expanded = app_feat.unsqueeze(1)  # (N,1,app)
+                            kpt_features = torch.cat(
+                                [kpt_features, app_expanded], dim=-1)
+                    gt_action = self._extract_action_labels(
+                        rois, batch_data_samples)
+                    if gt_action is not None:
+                        # V12: binary label mapping (fallback path)
+                        if self.action_head.num_classes == 1:
+                            valid_mask = gt_action >= 0
+                            binary = (gt_action >= 6).long()
+                            gt_action = torch.where(
+                                valid_mask, binary,
+                                torch.full_like(gt_action, -1))
+                        action_losses = self.action_head.loss(
+                            kpt_features, gt_action)
+                        losses.update(action_losses)
+                    else:
+                        losses['loss_action'] = x[0].sum() * 0
             else:
                 losses['loss_action'] = x[0].sum() * 0
 
@@ -206,11 +264,32 @@ class RTMDetWithPose(SingleStageDetector):
         )
         self._attach_pose(det_results_out, roi_map, pose_kpts, pose_scores)
 
-        # Action classification (single-frame, T=1)
-        # 直接用 pose_head.forward 解码到 [0,1] 归一化空间，避免 rescale 坐标不匹配
+        # Action classification
         if self.action_head is not None:
-            with torch.no_grad():
-                kpt_features = self._extract_kpt_features_from_roi(roi_feats)
+            appearance_dim = getattr(self.action_head, 'appearance_dim', 0)
+            kpt_features = None
+            # V9: try GT temporal sequences (for val consistency with training)
+            if rois.numel() > 0:
+                kpt_seq, _ = self._extract_temporal_action_data(
+                    rois, batch_data_samples)
+                if kpt_seq is not None:
+                    kpt_features = kpt_seq
+            # Fallback: single-frame pose_head features (real inference)
+            if kpt_features is None:
+                with torch.no_grad():
+                    kpt_features = self._extract_kpt_features_from_roi(
+                        roi_feats)
+            # V11: concat GAP appearance features
+            if appearance_dim > 0:
+                gap = self._extract_gap_features(
+                    roi_feats, rois, batch_data_samples)
+                if gap is not None:
+                    N, T, _ = kpt_features.shape
+                    app_feat = gap[:, :appearance_dim]
+                    app_expanded = app_feat.unsqueeze(1).expand(
+                        N, T, appearance_dim)
+                    kpt_features = torch.cat(
+                        [kpt_features, app_expanded], dim=-1)
             action_probs = self.action_head.predict(kpt_features)
             self._attach_action(det_results_out, roi_map, action_probs)
 
@@ -384,6 +463,29 @@ class RTMDetWithPose(SingleStageDetector):
             inst.keypoint_scores[inst_idx] = keypoint_scores[i]
 
     # ------------------------------------------------------------------
+    # V11: RoI appearance feature extraction
+    # ------------------------------------------------------------------
+    def _extract_gap_features(self, roi_feats, rois, batch_data_samples):
+        """Extract GAP (Global Average Pooling) appearance features from RoI.
+
+        For training: match RoI to GT via IoU, then extract GAP from roi_feats.
+        Returns (N, appearance_dim) tensor aligned with the temporal kpt_seq.
+
+        Args:
+            roi_feats: (M, C, H, W) RoI-aligned features from pose_roi_extractor.
+            rois: (M, 5) RoIs [batch_idx, x1, y1, x2, y2].
+            batch_data_samples: batch data samples for IoU matching.
+
+        Returns:
+            gap_feats: (M, C) GAP features for each RoI, or None.
+        """
+        if roi_feats is None or roi_feats.numel() == 0:
+            return None
+        # GAP: (M, C, H, W) → (M, C)
+        gap = roi_feats.mean(dim=[2, 3])  # (M, C)
+        return gap
+
+    # ------------------------------------------------------------------
     # Action head helpers
     # ------------------------------------------------------------------
     def _build_action_gt(self, rois, batch_data_samples):
@@ -529,6 +631,84 @@ class RTMDetWithPose(SingleStageDetector):
             return None
         return gt_labels
 
+    def _extract_temporal_action_data(self, rois, batch_data_samples):
+        """Extract GT temporal keypoint sequences and action labels for each RoI.
+
+        Used for V9 multi-frame training. Falls back to None if kpt_sequence
+        is not available in the dataset (backward compatible with V8 data).
+
+        Returns:
+            kpt_sequences: (N, T, K*3) tensor, or None if not available.
+            gt_labels: (N,) action class labels (-1 for unmatched), or None.
+        """
+        num_rois = rois.size(0)
+        device = rois.device
+
+        gt_labels = torch.full(
+            (num_rois,), -1, device=device, dtype=torch.long)
+        all_sequences = []
+        has_any_label = False
+        has_any_seq = False
+        T = None
+        KD = None  # feature dim per frame (21 for K*3, 35 for K*5)
+
+        for i in range(num_rois):
+            img_idx = int(rois[i, 0])
+            if img_idx >= len(batch_data_samples):
+                all_sequences.append(None)
+                continue
+
+            ds = batch_data_samples[img_idx]
+            gt_instances = getattr(ds, 'gt_instances', None)
+            if gt_instances is None or len(gt_instances) == 0:
+                all_sequences.append(None)
+                continue
+
+            gt_bboxes = getattr(gt_instances, 'bboxes', None)
+            if gt_bboxes is None or len(gt_bboxes) == 0:
+                all_sequences.append(None)
+                continue
+
+            gt_bboxes_t = get_box_tensor(gt_bboxes).to(device=device)
+            roi_box = rois[i, 1:].unsqueeze(0)
+            ious = bbox_overlaps(roi_box, gt_bboxes_t)
+            max_iou, gt_idx = ious.max(dim=1)
+            if float(max_iou.item()) < 0.1:
+                all_sequences.append(None)
+                continue
+            idx = int(gt_idx.item())
+
+            # Get action label
+            action_class = getattr(gt_instances, 'action_class', None)
+            if action_class is not None and idx < len(action_class):
+                val = int(action_class[idx])
+                if val >= 0:
+                    gt_labels[i] = val
+                    has_any_label = True
+
+            # Get kpt_sequence
+            kpt_seq = getattr(gt_instances, 'kpt_sequence', None)
+            if kpt_seq is not None and idx < kpt_seq.size(0):
+                seq = kpt_seq[idx]  # (T, KD)
+                all_sequences.append(seq)
+                has_any_seq = True
+                if T is None:
+                    T = seq.size(0)
+                    KD = seq.size(1)
+            else:
+                all_sequences.append(None)
+
+        if not has_any_label or not has_any_seq or T is None:
+            return None, None
+
+        # Build (N, T, KD) tensor
+        kpt_sequences = torch.zeros(num_rois, T, KD, device=device)
+        for i, seq in enumerate(all_sequences):
+            if seq is not None:
+                kpt_sequences[i] = seq.to(device)
+
+        return kpt_sequences, gt_labels
+
     def _extract_kpt_features_from_roi(self, roi_feats):
         """Extract normalized keypoint features from pose_head for action inference.
 
@@ -560,7 +740,49 @@ class RTMDetWithPose(SingleStageDetector):
         pred_vis[oob] = 0.0
 
         kpt = torch.stack([pred_x, pred_y, pred_vis], dim=-1)  # (N, K, 3)
-        return kpt.reshape(kpt.size(0), 1, -1)  # (N, 1, K*3)
+
+        # V10 bone mode: convert keypoints to bone features
+        if self.action_head is not None:
+            bone_mode = getattr(self.action_head, 'bone_mode', False)
+            if bone_mode:
+                return self._kpt_to_bone_features(kpt)  # (N, 1, 36)
+
+        # Pad with zero velocity (dx=0, dy=0) if action_head expects kpt_dim > 3
+        if self.action_head is not None:
+            kpt_dim = getattr(self.action_head, 'kpt_dim', 3)
+            if kpt_dim > 3:
+                pad = torch.zeros(
+                    kpt.size(0), kpt.size(1), kpt_dim - 3, device=kpt.device)
+                kpt = torch.cat([kpt, pad], dim=-1)  # (N, K, kpt_dim)
+
+        return kpt.reshape(kpt.size(0), 1, -1)  # (N, 1, K*kpt_dim)
+
+    def _kpt_to_bone_features(self, kpt):
+        """Convert keypoint predictions to bone features for V10.
+
+        Args:
+            kpt: (N, K, 3) tensor with (norm_x, norm_y, vis) per keypoint.
+
+        Returns:
+            bone_feat: (N, 1, 36) bone features for single-frame inference.
+                Per bone: (dx, dy, angle, length, d_angle=0, d_length=0).
+        """
+        from rtmdet_pose_ext.action_head import BONE_CONNECTIONS
+        N = kpt.size(0)
+        device = kpt.device
+        feats = []
+        for start, end in BONE_CONNECTIONS:
+            dx = kpt[:, end, 0] - kpt[:, start, 0]  # (N,)
+            dy = kpt[:, end, 1] - kpt[:, start, 1]  # (N,)
+            length = torch.sqrt(dx * dx + dy * dy + 1e-8)
+            angle = torch.atan2(dx, dy)
+            # Single frame: no temporal velocity
+            d_angle = torch.zeros_like(angle)
+            d_length = torch.zeros_like(length)
+            feats.append(torch.stack(
+                [dx, dy, angle, length, d_angle, d_length], dim=-1))
+        bone_feat = torch.cat(feats, dim=-1)  # (N, 36)
+        return bone_feat.unsqueeze(1)  # (N, 1, 36)
 
     def _attach_action(self, det_results, roi_map, action_output):
         """Attach action prediction scores to detection results.

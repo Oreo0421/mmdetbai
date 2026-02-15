@@ -65,7 +65,7 @@ model = dict(
         num_classes=10,         # 10-class action recognition
         loss_weight=1.0,
         class_weight=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0,
-                      2.0, 2.0, 2.0, 2.0],  # 跌倒类加权
+                      4.0, 4.0, 4.0, 4.0],  # 跌倒类加权
         dropout=0.1,
     ),
     train_cfg=dict(assigner=dict(type='DynamicSoftLabelAssigner', topk=13), allowed_border=-1, pos_weight=-1, debug=False),

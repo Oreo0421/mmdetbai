@@ -82,6 +82,12 @@ def parse_args():
     parser.add_argument(
         '--copy', dest='symlink', action='store_false',
         help='Copy images instead of symlinking')
+    parser.add_argument(
+        '--seq-len', type=int, default=8,
+        help='Temporal sequence length for kpt_sequence (default: 8, 0=disable)')
+    parser.add_argument(
+        '--bone', action='store_true', default=False,
+        help='Use bone/skeleton features (V10) instead of keypoint features (V9)')
     return parser.parse_args()
 
 
@@ -184,9 +190,10 @@ def collect_all_data(src_root):
 
 
 def split_by_subfolder(all_images, all_annotations, train_ratio, seed):
-    """Split data by person_id (subfolder) to avoid data leakage.
+    """Split data by person_id (subfolder) with stratified sampling.
 
-    All frames from the same subfolder go into the same split.
+    Ensures every action class has at least 1 subfolder in val.
+    Within each class, shuffles subfolders and picks ~20% for val.
 
     Returns:
         train_images, train_annotations, val_images, val_annotations
@@ -199,20 +206,29 @@ def split_by_subfolder(all_images, all_annotations, train_ratio, seed):
         key = (img['activity_folder'], img['person_id'])
         groups[key].append(img['id'])
 
-    # Shuffle groups and split
-    group_keys = sorted(groups.keys())
-    random.shuffle(group_keys)
+    # Group subfolders by action_class
+    class_to_subs = defaultdict(list)
+    for (activity_folder, person_id) in groups.keys():
+        action_class = ACTIVITY_FOLDER_TO_CLASS[activity_folder]
+        class_to_subs[action_class].append((activity_folder, person_id))
 
-    total_imgs = sum(len(groups[k]) for k in group_keys)
-    target_train = int(total_imgs * train_ratio)
-
+    # Stratified split: per class, at least 1 subfolder goes to val
     train_img_ids = set()
-    count = 0
-    for key in group_keys:
-        if count >= target_train:
-            break
-        train_img_ids.update(groups[key])
-        count += len(groups[key])
+    val_img_ids = set()
+
+    for cls_id in sorted(class_to_subs.keys()):
+        subs = class_to_subs[cls_id]
+        random.shuffle(subs)
+
+        # At least 1 for val, rest follows train_ratio
+        n_val = max(1, int(len(subs) * (1 - train_ratio)))
+        val_subs = subs[:n_val]
+        train_subs = subs[n_val:]
+
+        for key in train_subs:
+            train_img_ids.update(groups[key])
+        for key in val_subs:
+            val_img_ids.update(groups[key])
 
     # Build annotation lookup by image_id
     ann_by_img = defaultdict(list)
@@ -223,12 +239,12 @@ def split_by_subfolder(all_images, all_annotations, train_ratio, seed):
     train_annotations, val_annotations = [], []
 
     for img in all_images:
-        if img['id'] in train_img_ids:
-            train_images.append(img)
-            train_annotations.extend(ann_by_img.get(img['id'], []))
-        else:
+        if img['id'] in val_img_ids:
             val_images.append(img)
             val_annotations.extend(ann_by_img.get(img['id'], []))
+        else:
+            train_images.append(img)
+            train_annotations.extend(ann_by_img.get(img['id'], []))
 
     return train_images, train_annotations, val_images, val_annotations
 
@@ -288,6 +304,261 @@ def print_stats(name, images, annotations):
     print(f'    --- Not-falling: {not_falling_total}, Falling: {falling_total}')
 
 
+def add_kpt_sequences(all_images, all_annotations, seq_len=8):
+    """Add temporal keypoint sequences with velocity to each annotation.
+
+    For each annotation, looks back seq_len-1 frames in the same subfolder
+    to build a T-length normalized keypoint sequence. Keypoints are normalized
+    to [0,1] relative to each frame's bbox.
+
+    Per-keypoint features (kpt_dim=5):
+        x, y, vis, dx, dy
+    where dx/dy is the inter-frame velocity (difference from previous frame).
+    Padded frames (copies of the first frame) have dx=dy=0.
+
+    Args:
+        all_images: list of image dicts (must have activity_folder, person_id).
+        all_annotations: list of annotation dicts (modified in-place).
+        seq_len: temporal window size (default: 8).
+    """
+    K = 7
+    K3 = K * 3  # 21 (intermediate: x, y, vis)
+    KD = K * 5  # 35 (final: x, y, vis, dx, dy)
+
+    # image_id -> list of annotations
+    ann_by_img = defaultdict(list)
+    for ann in all_annotations:
+        ann_by_img[ann['image_id']].append(ann)
+
+    # Group images by (activity_folder, person_id), sort by file_name
+    groups = defaultdict(list)
+    for img in all_images:
+        key = (img['activity_folder'], img['person_id'])
+        groups[key].append(img)
+
+    for key in groups:
+        groups[key].sort(key=lambda x: x['file_name'])
+
+    def normalize_kpts(ann):
+        """Normalize keypoints relative to bbox -> list of K*3 floats."""
+        kpts = ann.get('keypoints', [])
+        bbox = ann.get('bbox', [0, 0, 1, 1])  # [x, y, w, h]
+        bx, by, bw, bh = bbox[0], bbox[1], bbox[2], bbox[3]
+        if bw <= 0 or bh <= 0:
+            return [0.0] * K3
+
+        feat = []
+        for k in range(K):
+            if k * 3 + 2 < len(kpts):
+                x, y, v = kpts[k * 3], kpts[k * 3 + 1], kpts[k * 3 + 2]
+                nx = max(0.0, min(1.0, (x - bx) / bw))
+                ny = max(0.0, min(1.0, (y - by) / bh))
+                vis = 1.0 if v >= 2 else (0.5 if v == 1 else 0.0)
+            else:
+                nx, ny, vis = 0.0, 0.0, 0.0
+            feat.extend([round(nx, 4), round(ny, 4), round(vis, 1)])
+        return feat
+
+    def add_velocity(seq_k3):
+        """Convert K*3 sequence to K*5 by adding inter-frame velocity (dx, dy).
+
+        Args:
+            seq_k3: list of T lists, each K*3 floats (x, y, vis).
+
+        Returns:
+            list of T lists, each K*5 floats (x, y, vis, dx, dy).
+        """
+        seq_k5 = []
+        for t in range(len(seq_k3)):
+            curr = seq_k3[t]
+            prev = seq_k3[t - 1] if t > 0 else curr
+            feat5 = []
+            for k in range(K):
+                x = curr[k * 3]
+                y = curr[k * 3 + 1]
+                vis = curr[k * 3 + 2]
+                dx = round(x - prev[k * 3], 4)
+                dy = round(y - prev[k * 3 + 1], 4)
+                feat5.extend([x, y, vis, dx, dy])
+            seq_k5.append(feat5)
+        return seq_k5
+
+    count = 0
+    for key, imgs in groups.items():
+        # Pre-compute normalized keypoints (K*3) for each frame in this subfolder
+        frame_feats = []
+        for img in imgs:
+            anns = ann_by_img.get(img['id'], [])
+            if len(anns) > 0:
+                frame_feats.append(normalize_kpts(anns[0]))
+            else:
+                frame_feats.append([0.0] * K3)
+
+        # For each annotation, build kpt_sequence with velocity
+        for frame_idx, img in enumerate(imgs):
+            anns = ann_by_img.get(img['id'], [])
+            for ann in anns:
+                # Sequence: last seq_len frames ending at frame_idx (K*3)
+                start = max(0, frame_idx - seq_len + 1)
+                seq_k3 = [frame_feats[t] for t in range(start, frame_idx + 1)]
+
+                # Pad from front by repeating earliest frame
+                while len(seq_k3) < seq_len:
+                    seq_k3.insert(0, seq_k3[0])
+
+                # Add velocity features: K*3 -> K*5
+                seq_k5 = add_velocity(seq_k3)
+
+                ann['attributes']['kpt_sequence'] = seq_k5
+                count += 1
+
+    print(f'  Added kpt_sequence (T={seq_len}, dim={KD}) to {count} annotations')
+
+
+# ---- V10: Bone skeleton connections ----
+# head(0), shoulder(1), hand_R(2), hand_L(3), hips(4), foot_R(5), foot_L(6)
+BONE_CONNECTIONS = [
+    (0, 1),  # head → shoulder (neck)
+    (1, 2),  # shoulder → hand_right (right arm)
+    (1, 3),  # shoulder → hand_left (left arm)
+    (1, 4),  # shoulder → hips (torso)
+    (4, 5),  # hips → foot_right (right leg)
+    (4, 6),  # hips → foot_left (left leg)
+]
+NUM_BONES = len(BONE_CONNECTIONS)
+
+
+def add_bone_sequences(all_images, all_annotations, seq_len=8):
+    """Add temporal bone/skeleton feature sequences to each annotation (V10).
+
+    For each annotation, looks back seq_len-1 frames in the same subfolder.
+    Computes bone vectors from 6 skeleton connections, then adds temporal
+    velocity features.
+
+    Per-bone features (6 dim):
+        dx, dy, angle, length, d_angle, d_length
+    Total per frame: 6 bones × 6 = 36
+
+    Args:
+        all_images: list of image dicts (must have activity_folder, person_id).
+        all_annotations: list of annotation dicts (modified in-place).
+        seq_len: temporal window size (default: 8).
+    """
+    import math
+
+    K = 7
+    K3 = K * 3  # 21
+    BD = NUM_BONES * 6  # 36
+
+    # image_id -> list of annotations
+    ann_by_img = defaultdict(list)
+    for ann in all_annotations:
+        ann_by_img[ann['image_id']].append(ann)
+
+    # Group images by (activity_folder, person_id), sort by file_name
+    groups = defaultdict(list)
+    for img in all_images:
+        key = (img['activity_folder'], img['person_id'])
+        groups[key].append(img)
+
+    for key in groups:
+        groups[key].sort(key=lambda x: x['file_name'])
+
+    def normalize_kpts(ann):
+        """Normalize keypoints relative to bbox -> list of K*3 floats."""
+        kpts = ann.get('keypoints', [])
+        bbox = ann.get('bbox', [0, 0, 1, 1])
+        bx, by, bw, bh = bbox[0], bbox[1], bbox[2], bbox[3]
+        if bw <= 0 or bh <= 0:
+            return [0.0] * K3
+
+        feat = []
+        for k in range(K):
+            if k * 3 + 2 < len(kpts):
+                x, y, v = kpts[k * 3], kpts[k * 3 + 1], kpts[k * 3 + 2]
+                nx = max(0.0, min(1.0, (x - bx) / bw))
+                ny = max(0.0, min(1.0, (y - by) / bh))
+                vis = 1.0 if v >= 2 else (0.5 if v == 1 else 0.0)
+            else:
+                nx, ny, vis = 0.0, 0.0, 0.0
+            feat.extend([round(nx, 4), round(ny, 4), round(vis, 1)])
+        return feat
+
+    def kpt_to_bones(kpt_k3):
+        """Compute bone features from K*3 keypoint features.
+
+        Returns list of NUM_BONES * 4 floats: (dx, dy, angle, length) per bone.
+        """
+        bones = []
+        for start, end in BONE_CONNECTIONS:
+            sx, sy = kpt_k3[start * 3], kpt_k3[start * 3 + 1]
+            ex, ey = kpt_k3[end * 3], kpt_k3[end * 3 + 1]
+            dx = ex - sx
+            dy = ey - sy
+            length = math.sqrt(dx * dx + dy * dy + 1e-8)
+            angle = math.atan2(dx, dy)  # angle from vertical (y-axis)
+            bones.extend([round(dx, 4), round(dy, 4),
+                          round(angle, 4), round(length, 4)])
+        return bones  # NUM_BONES * 4 = 24
+
+    def add_bone_velocity(bone_seq):
+        """Add inter-frame velocity (d_angle, d_length) to bone features.
+
+        Input:  T × 24 (6 bones × 4: dx, dy, angle, length)
+        Output: T × 36 (6 bones × 6: dx, dy, angle, length, d_angle, d_length)
+        """
+        seq_out = []
+        for t in range(len(bone_seq)):
+            curr = bone_seq[t]
+            prev = bone_seq[t - 1] if t > 0 else curr
+            feat = []
+            for b in range(NUM_BONES):
+                dx = curr[b * 4]
+                dy = curr[b * 4 + 1]
+                angle = curr[b * 4 + 2]
+                length = curr[b * 4 + 3]
+                d_angle = round(angle - prev[b * 4 + 2], 4)
+                d_length = round(length - prev[b * 4 + 3], 4)
+                feat.extend([dx, dy, angle, length, d_angle, d_length])
+            seq_out.append(feat)
+        return seq_out  # T × 36
+
+    count = 0
+    for key, imgs in groups.items():
+        # Pre-compute normalized keypoints (K*3) for each frame
+        frame_kpts = []
+        for img in imgs:
+            anns = ann_by_img.get(img['id'], [])
+            if len(anns) > 0:
+                frame_kpts.append(normalize_kpts(anns[0]))
+            else:
+                frame_kpts.append([0.0] * K3)
+
+        # Pre-compute bone features (NUM_BONES*4) for each frame
+        frame_bones = [kpt_to_bones(kpt) for kpt in frame_kpts]
+
+        # For each annotation, build bone_sequence with velocity
+        for frame_idx, img in enumerate(imgs):
+            anns = ann_by_img.get(img['id'], [])
+            for ann in anns:
+                start = max(0, frame_idx - seq_len + 1)
+                seq_bones = [frame_bones[t]
+                             for t in range(start, frame_idx + 1)]
+
+                # Pad from front by repeating earliest frame
+                while len(seq_bones) < seq_len:
+                    seq_bones.insert(0, seq_bones[0])
+
+                # Add velocity: 24 -> 36 per frame
+                seq_full = add_bone_velocity(seq_bones)
+
+                ann['attributes']['kpt_sequence'] = seq_full
+                count += 1
+
+    print(f'  Added bone_sequence (T={seq_len}, dim={BD}) '
+          f'to {count} annotations')
+
+
 def main():
     args = parse_args()
     print('=' * 60)
@@ -302,6 +573,17 @@ def main():
     print('\nCollecting data from 10 activity folders...')
     all_images, all_annotations, img_src_paths = collect_all_data(args.src)
     print(f'  Total: {len(all_images)} images, {len(all_annotations)} annotations')
+
+    # 1.5. Add temporal sequences (V9: keypoint features, V10: bone features)
+    if args.seq_len > 0:
+        if args.bone:
+            print(f'\nAdding bone_sequences (T={args.seq_len}, V10)...')
+            add_bone_sequences(all_images, all_annotations,
+                               seq_len=args.seq_len)
+        else:
+            print(f'\nAdding kpt_sequences (T={args.seq_len}, V9)...')
+            add_kpt_sequences(all_images, all_annotations,
+                              seq_len=args.seq_len)
 
     # 2. Split train/val
     print('\nSplitting by subfolder...')
