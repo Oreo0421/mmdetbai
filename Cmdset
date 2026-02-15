@@ -3,6 +3,15 @@ path:
 /home/tbai/mmdetection/mmdetection/rtmdet_pose_ext
 /home/tbai/baimmdet
 
+qQ947425517.
+
+训练数据格式：
+- 51个视频，每个视频是单一动作，action_class 不变 
+- 5fps（原始25fps每5帧采样一次）
+  - 9个人（AAA~AAG）                                                                                                                                                        
+  - 每帧有 keypoints (7 joints × 3) 在图像像素坐标     
+
+
 训练cmd
 
 export CUDA_VISIBLE_DEVICES=0
@@ -38,13 +47,34 @@ python tools/train.py rtmdet_pose_v5.py --work-dir work_dirs/rtmdet_pose_v5/
 
  python tools/train.py rtmdet_pose_v7_withclass_track.py --work-dir work_dirs/rtmdet_pose_v7_withclass_track
 
+
+python tools/train.py /rtmdet_pose_v8_10class_track.py  --work-dir work_dirs/rtmdet_pose_v8_withclass_track
+
+export CUDA_VISIBLE_DEVICES=1 
+python tools/train.py configs/rtmdet_bai/rtmdet_pose_v9_temporal.py --work-dir work_dirs/rtmdet_pose_v9_from_v6
+
+export CUDA_VISIBLE_DEVICES=0
+python tools/train.py configs/rtmdet_bai/rtmdet_pose_v10_bone.py --work-dir work_dirs/rtmdet_pose_v10_bone
+
+export CUDA_VISIBLE_DEVICES=1 
+python tools/train.py configs/rtmdet_bai/rtmdet_pose_v11_appearance.py --work-dir work_dirs/rtmdet_pose_v11_appearance
+
+export CUDA_VISIBLE_DEVICES=0
+ python tools/train.py configs/rtmdet_bai/rtmdet_pose_v12_binary.py --work-dir work_dirs/rtmdet_pose_v12_binary
+export CUDA_VISIBLE_DEVICES=1
+python tools/train.py configs/rtmdet_bai/rtmdet_pose_v12b_antiovfit.py --work-dir work_dirs/rtmdet_pose_v12b
+
+
+python tools/train.py configs/rtmdet_bai/rtmdet_pose_v13_multihead.py --work-dir work_dirs/rtmdet_pose_v13
+
 如果遇到gpu崩溃，mikro这个电脑老崩
+
 使用：
 python tools/train.py rtmdet_pose_clean.py \
   --work-dir work_dirs/rtmdet_pose_0206/ \
   --resume
-
-
+=======================================================================================
+test
 
 
 微调
@@ -60,6 +90,40 @@ python tools/test.py rtmdet_pose_v4.py /home/tbai/mmdetection/mmdetection/work_d
 
 python tools/test.py rtmdet_pose_v6.py /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_v6/best_coco_bbox_mAP_epoch_75.pth   
 
+python tools/test.py rtmdet_pose_v7_withclass_track.py /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_v7_withclass_track/best_coco_bbox_mAP_epoch_45.pth
+
+
+python tools/test.py configs/rtmdet_bai/rtmdet_pose_v10_bone.py work_dirs/rtmdet_pose_v10_bone/best_coco_bbox_mAP_epoch_20.pth   
+
+  python tools/infer_v10_bone.py --input /home/tbai/Desktop/infer --output /home/tbai/Desktop/fall_infer/v10 --radius 1 --checkpoint work_dirs/rtmdet_pose_v10_bone/best_coco_bbox_mAP_epoch_20.pth
+
+ python tools/test.py configs/rtmdet_bai/rtmdet_pose_v12_binary.py work_dirs/rtmdet_pose_v12_binary/best_coco_bbox_mAP_epoch_6.pth
+
+ python tools/test.py configs/rtmdet_bai/rtmdet_pose_v13_multihead.py \
+      work_dirs/rtmdet_pose_v13/best_*.pth
+
+
+
+      推理 (视频可视化)
+
+  python tools/infer_v13_multihead.py \
+      --input /home/tbai/Desktop/infer \
+      --output /home/tbai/Desktop/fall_infer/v13
+
+  # 指定checkpoint
+  python tools/infer_v13_multihead.py \
+      --checkpoint work_dirs/rtmdet_pose_v13/best_*.pth \
+      --input /home/tbai/Desktop/infer \
+      --output /home/tbai/Desktop/fall_infer/v13
+
+  # 调低跌倒阈值 (更敏感, 减少漏检)
+  python tools/infer_v13_multihead.py \
+      --fall-thr 0.3 \
+      --input /home/tbai/Desktop/infer \
+      --output /home/tbai/Desktop/fall_infer/v13
+
+
+===================================================
 python pose_infer/inference.py \
     --config /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_clean/rtmdet_pose_clean.py \
     --checkpoint /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_0211/best_coco_bbox_mAP_epoch_48.pth \
@@ -76,109 +140,9 @@ python pose_infer/inference.py \
     --checkpoint /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_v6/best_coco_bbox_mAP_epoch_75.pth \
     --input /home/tbai/Desktop/SenIRDatasetProcessed/1A-2\ Walking/AAG/stitched_png \
     --output /home/tbai/Desktop/results0213_v6/
+===============================================================================
 
-pipeline :
-The image is processed through a Backbone and Neck to obtain FPN features [P3, P4, P5]. Then, RTMDetHead is used to predict the bounding box (x1, y1, x2, y2). In RoIAlign, the features are clipped from the FPN using the four corners of the bounding box, resulting in a 48×48 feature map. Next, HeatmapHead is used to predict heatmaps, obtaining 7 keypoints, resulting in 96×96 heat maps. Finally, these are decoded and mapped back to the image's coordinate system.
-
-  训练流程对应代码：
-   rtmdet_with_pose.py:71   loss()  
-   检测loss    rtmdet_with_pose.py:91  bbox_head.loss(x, ...)
-   构建GT RoIs  rtmdet_with_pose.py:262  _build_gt_rois()
-    RoI特征裁剪  rtmdet_with_pose.py:116  pose_roi_extractor(x, rois)  
-    生成热图GT   heatmap_head.py:319      _build_targets_from_rois() 
-    关键点映射   heatmap_head.py:425      _map_keypoints_to_img() + 左右交换 
-    Pose loss    heatmap_head.py:184      MSE(pred_heatmap, gt_heatmap)  
-
-
-Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.553
- Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ] =  0.819
- Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] =  0.458
- Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] =  0.000
- Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = -1.000
- Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.573
- Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] =  0.831
- Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] =  0.494
- Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] =  0.000
- Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = -1.000
-02/11 13:20:25 - mmengine - INFO - Epoch(test) [1194/1194]    coco/bbox_mAP: 0.8870  coco/bbox_mAP_50: 0.9810  coco/bbox_mAP_75: 0.9480  coco/bbox_mAP_s: 0.8870  coco/bbox_mAP_m: 0.8220  coco/bbox_mAP_l: -1.0000  coco/AP: 0.5525  coco/AP .5: 0.8187  coco/AP .75: 0.4585  coco/AP (M): 0.0000  coco/AP (L): -1.0000  coco/AR: 0.5735  coco/AR .5: 0.8311  coco/AR .75: 0.4943  coco/AR (M): 0.0000  coco/AR (L): -1.0000  data_time: 0.0020  time: 0.1327
-
-
-
-============================================
-v4_2
-
- (HeatmapHeadV4 + rtmdet_pose_v4.py)                                                                                                                                                                           
- 重新设计 loss：                                                                                                                                                                                                                                                                                      
-   前景加权 MSE       peak 像素 ×10，背景 ×1，解决 91% 背景稀释问题                           
-
-  可见性分支        GAP→FC→sigmoid，预测每个点是否可见（BCE loss）                          
-
-  三级权重           v=0 图外: loc=0,vis=0；v=1 遮挡: loc=0.3,vis=0；v=2 可见: loc=1.0,vis=1 
-
-  per-keypoint 平均  固定除以 K=7，不随可见点数波动                                          
- 
-  upsample_factor=2 │ 48→96×96 heatmap，减少量化误差                                    
-
-  sigma=3.0         配合 96×96，更宽容的高斯目标                                          
-
-  sigmas=[0.2]       OKS 评估容差放宽                                                
-
-
-  Loss 公式： loss = 5.0 × fg_weighted_MSE + 1.0 × BCE_vis
-
-  mAp 提升到58%
-
-  V5 HeatmapHeadV4 
-
-  V4。2 的 config 基础上加数据增强：
-       改动                               内容                         
-  
-   旋转增强       RandomRotateWithPose(±20°, prob=0.5)，画布扩展不裁切 
-  
- sigmas=[0.25] 评估容差从 0.2 → 0.25                                
- 
-  Head/Loss 不变，和 V4 完全一样。
-
-  结果： kpt AP = 0.570（和 V4 几乎相同，旋转增强对此数据集无明显帮助、
-
-  对比V4，2无改变
-
-v5
-
-  V5.2 (HeatmapHeadV5 + rtmdet_pose_v5.py)
-
-  在 V4 loss j加上 soft-argmax 坐标回归：
-
-  soft-argmax      heatmap × temperature(β=10)  softmax  期望坐标，可导
- 
-  SmoothL1 坐标 loss 直接优化预测坐标与 GT 坐标的距离                      
-
-   精确 GT 坐标      浮点坐标（无量化），比 heatmap 的整数 argmax 更精确    
- 
-  Loss 公式： loss = 5.0 × fg_weighted_MSE + 1.0 × BCE_vis + 0.5 × SmoothL1_coord
-
-
-v6:
-  
-            V4 (2D Heatmap)        V6 (SimDR 1D)      
-  
-  预测   96×96 2D 热图         两条 96-bin 1D 向量    
-  
-  Loss    MSE(前景加权)          KL 散度(1D 高斯)   
-  
-  上采样 deconv 48→96          1D ConvTranspose      
-  
-   解码    2D argmax + sub-pixel 1D argmax / scale      
- 
- 量化   1/96 像素              1/96 像素(但 x,y 独立) 
-
-
-
-
-
-
-=================================================================================
-  # 图片文件夹 (单帧, 无跟踪)                                                                                                                                                                                      
+ # 图片文件夹 (单帧, 无跟踪)                                                                                                                                                                                      
   python pose_infer/infer_classifyandpred.py \                
       --config rtmdet_pose_v7_withclass_track.py \                                                                                                                                                                 
       --checkpoint work_dirs/xxx/best.pth \                                                                                                                                                                        
@@ -207,12 +171,550 @@ v6:
 ❯ 多个图片帧                                                                                                                                                                                                 
                                                                                                                                                                                          
                                                               
-  python pose_infer/infer_classifyandpred.py --config rtmdet_pose_v7_withclass_track.py                                                                                --input /path/to/sequential_frames/ \                                      
-      --checkpoint work_dirs/xxx/best.pth \                                                                                                                                                                        
-      --use-tracker  
+  python pose_infer/infer_classifyandpred.py \
+    --config rtmdet_pose_v7_withclass_track.py \
+    --checkpoint work_dirs/rtmdet_pose_v7_withclass_track/best_coco_bbox_mAP_epoch_45.pth \
+    --input /home/tbai/Desktop/SenIRDatasetProcessed/1A-2\ Walking/AAG/stitched_png \
+    --output /home/tbai/Desktop/results0213_v7/ \
+    --use-tracker
+
+
+带 ByteTrack 跟踪 + GRU 时序分类（连续帧/视频推荐）：
+
+  python /home/tbai/mmdetection/mmdetection/pose_infer/infer_classifyandpred.py \
+    --config /home/tbai/mmdetection/mmdetection/rtmdet_pose_v7_withclass_track.py \
+    --checkpoint /home/tbai/mmdetection/mmdetection/work_dirs/rtmdet_pose_v7_withclass_track/best_coco_bbox_mAP_epoch_45.pth \
+    --radius 1 \
+    --use-tracker \
+    --input /home/tbai/Desktop/infer/1A-5 Lying down/AAC/stitched_png \
+    --output /home/tbai/Desktop/inference_results_v7
+
+
+v10:
+  python tools/infer_v10_bone.py \                                                                                      
+      --checkpoint work_dirs/rtmdet_pose_v10_bone/epoch_50.pth \               
+      --input /home/tbai/Desktop/infer \                                                                               
+      --output /home/tbai/Desktop/fall_infer/v10 \                             
+      --radius 1
+
+v12:
+python tools/infer_v12_binary.py --checkpoint work_dirs/rtmdet_pose_v12b/best_coco_bbox_mAP_epoch_6.pth --input /home/tbai/Desktop/infer --output /home/tbai/Desktop/fall_infer/v12 --radius 1 --thickness 1 --fall-thr 0.6 --max-seq-len 10 --rule-static-frames 3
+
+  各参数作用：
+
+  ┌──────────────────────┬──────┬──────┬────────────────────────────────────────────────────────┐
+  │         参数         │ 默认 │ 建议 │                          作用                          │
+  ├──────────────────────┼──────┼──────┼────────────────────────────────────────────────────────┤
+  │ --fall-thr           │ 0.5  │ 0.6  │ 提高跌倒判定门槛，减少误报                             │
+  ├──────────────────────┼──────┼──────┼────────────────────────────────────────────────────────┤
+  │ --max-seq-len        │ 30   │ 10   │ 缩短时序buffer，跌倒特征更快被冲掉，爬起来后几帧就恢复 │
+  ├──────────────────────┼──────┼──────┼────────────────────────────────────────────────────────┤
+  │ --rule-static-frames │ 5    │ 3    │ 躺地不动多少帧后抑制报警（人躺着不动=已倒不是正在倒）  │
+  └──────────────────────┴──────┴──────┴────────────────────────────────────────────────────────┘
+ v13:
+  python tools/infer_v13_multihead.py \
+      --checkpoint work_dirs/rtmdet_pose_v13/epoch_50.pth \
+      --input /home/tbai/Desktop/infer \
+      --output /home/tbai/Desktop/fall_infer/v13 \
+      --radius 1 
+
+==================================================================================
+pipeline :
+The image is processed through a Backbone and Neck to obtain FPN features [P3, P4, P5]. Then, RTMDetHead is used to predict the bounding box (x1, y1, x2, y2). In RoIAlign, the features are clipped from the FPN using the four corners of the bounding box, resulting in a 48×48 feature map. Next, HeatmapHead is used to predict heatmaps, obtaining 7 keypoints, resulting in 96×96 heat maps. Finally, these are decoded and mapped back to the image's coordinate system.
+
+  训练流程对应代码：
+   rtmdet_with_pose.py:71   loss()  
+   检测loss    rtmdet_with_pose.py:91  bbox_head.loss(x, ...)
+   构建GT RoIs  rtmdet_with_pose.py:262  _build_gt_rois()
+    RoI特征裁剪  rtmdet_with_pose.py:116  pose_roi_extractor(x, rois)  
+    生成热图GT   heatmap_head.py:319      _build_targets_from_rois() 
+    关键点映射   heatmap_head.py:425      _map_keypoints_to_img() + 左右交换 
+    Pose loss    heatmap_head.py:184      MSE(pred_heatmap, gt_heatmap)  
+
+
+Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.553
+ Average Precision  (AP) @[ IoU=0.50      | area=   all | maxDets= 20 ] =  0.819
+ Average Precision  (AP) @[ IoU=0.75      | area=   all | maxDets= 20 ] =  0.458
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] =  0.000
+ Average Precision  (AP) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = -1.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=   all | maxDets= 20 ] =  0.573
+ Average Recall     (AR) @[ IoU=0.50      | area=   all | maxDets= 20 ] =  0.831
+ Average Recall     (AR) @[ IoU=0.75      | area=   all | maxDets= 20 ] =  0.494
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area=medium | maxDets= 20 ] =  0.000
+ Average Recall     (AR) @[ IoU=0.50:0.95 | area= large | maxDets= 20 ] = -1.000
+02/11 13:20:25 - mmengine - INFO - Epoch(test) [1194/1194]    coco/bbox_mAP: 0.8870  coco/bbox_mAP_50: 0.9810  coco/bbox_mAP_75: 0.9480  coco/bbox_mAP_s: 0.8870  coco/bbox_mAP_m: 0.8220  coco/bbox_mAP_l: -1.0000  coco/AP: 0.5525  coco/AP .5: 0.8187  coco/AP .75: 0.4585  coco/AP (M): 0.0000  coco/AP (L): -1.0000  coco/AR: 0.5735  coco/AR .5: 0.8311  coco/AR .75: 0.4943  coco/AR (M): 0.0000  coco/AR (L): -1.0000  data_time: 0.0020  time: 0.1327
 
 
 
+============================================
+v4
+
+ (HeatmapHeadV4 + rtmdet_pose_v4.py)                                                                                                                                                                           
+ 重新设计 loss：                                                                                                                                                                                                                                                                                      
+   前景加权 MSE       peak 像素 ×10，背景 ×1，解决 91% 背景稀释问题                           
+
+  可见性分支        GAP→FC→sigmoid，预测每个点是否可见（BCE loss）                          
+
+  三级权重           v=0 图外: loc=0,vis=0；v=1 遮挡: loc=0.3,vis=0；v=2 可见: loc=1.0,vis=1 
+
+  per-keypoint 平均  固定除以 K=7，不随可见点数波动                                          
+ 
+  upsample_factor=2 │ 48→96×96 heatmap，减少量化误差                                    
+
+  sigma=3.0         配合 96×96，更宽容的高斯目标                                          
+
+  sigmas=[0.2]       OKS 评估容差放宽                                                
+
+
+  Loss 公式： loss = 5.0 × fg_weighted_MSE + 1.0 × BCE_vis
+
+  mAp 提升到58%
+
+
+
+  V5 (HeatmapHeadV5 + rtmdet_pose_v5.py)
+
+  在 V4 loss 加上 soft-argmax 坐标回归：
+
+  soft-argmax      heatmap × temperature(β=10)  softmax  期望坐标，可导
+ 
+  SmoothL1 坐标 loss 直接优化预测坐标与 GT 坐标的距离                      
+
+   精确 GT 坐标      浮点坐标（无量化），比 heatmap 的整数 argmax 更精确    
+ 
+  Loss 公式： loss = 5.0 × fg_weighted_MSE + 1.0 × BCE_vis + 0.5 × SmoothL1_coord
+
+
+v6:
+  
+            V4 (2D Heatmap)        V6 (SimDR 1D)      
+  
+  预测   96×96 2D 热图         两条 96-bin 1D 向量    
+  
+  Loss    MSE(前景加权)          KL 散度(1D 高斯)   
+  
+  上采样 deconv 48→96          1D ConvTranspose      
+  
+   解码    2D argmax + sub-pixel 1D argmax / scale      
+ 
+ 量化   1/96 像素              1/96 像素(但 x,y 独立) 
+
+
+
+
+
+v7 ,二分法
+=================================================================================
+ 
+'1A-10 Falling and immediately standing up'
+ '1A-1 Standing still'
+'1A-2 Walking'
+'1A-3 Sitting down'
+'1A-4 Standing up'
+'1A-5 Lying down'
+'1A-6 Getting up from lying down'
+'1A-7 Falling while walking'
+ '1A-8 Falling while trying to stand'
+'1A-9 Falling while trying to sit'
+'calibrate room 2'
+
+
+=======================================================================
+
+v8 所有动作序列 然后二分。单frame训练 
+
+ 图片 → Backbone → Neck → BBox Head (检测)
+                         → Pose Head (关键点)
+                         → Action Head: keypoints → encoder → GRU → Linear(10) → softmax
+                                                                      ↓
+                                                            [0.01, 0.02, ..., 0.85, ...]
+                                                                      ↓
+                                                            argmax → class 6 (Falling walking)
+                                                            sum(6:10) → falling_prob = 0.92
+
+
+● GRU                                                                                                                            
+                                                              
+  GRU（Gated Recurrent Unit）是一种时序记忆网络。                                                                                
+                                                                                 
+  训练时用不到（每张图只有单帧，T=1，GRU 被跳过），推理时配合 Tracker 才起作用：                                                 
+                                                                                                                                 
+  帧1 keypoints → encoder → feat1 ─┐
+  帧2 keypoints → encoder → feat2 ─┤
+  帧3 keypoints → encoder → feat3 ─┼→ GRU → 综合判断: "这个人正在摔倒"
+  ...                               │
+  帧N keypoints → encoder → featN ─┘
+
+  为什么需要它：单帧很难区分"站着"和"正在倒下的瞬间"，GRU 能看到一个人过去 N 帧的姿态变化序列，比如：
+
+  - 站立 → 站立 → 站立 → 身体倾斜 → 倒地 → 判定为跌倒
+  - 一直躺着 → 躺着 → 躺着 → 这不是跌倒，是躺下
+
+  单帧看最后一帧都是"躺着"，但 GRU 知道之前发生了什么。
+
+
+  Softmax
+
+  Softmax 把网络输出的10个原始分数（logits）转换成概率分布：
+
+  原始 logits:  [2.1, 0.3, -1.0, 0.5, -0.8, 0.1, 5.2, 0.4, -0.3, 0.7]
+                                                     ↓ softmax
+  概率:         [0.02, 0.01, 0.00, 0.01, 0.00, 0.00, 0.93, 0.01, 0.00, 0.01]
+                                                           ↑
+                                                class 6: Falling walking (93%)
+
+  三个特点：
+  - 所有值变成 0~1 之间
+  - 总和 = 1（互斥概率）
+  - 最大的 logit 对应最大的概率
+
+  然后 argmax 取概率最大的类别作为预测结果，把 class 6-9 的概率加起来就是总的跌倒概率。
+
+  整体改动：从二分类升级到10类动作识别
+
+  之前系统只做 falling=1 vs not-falling=0 的二分类，现在升级为10类动作分类，同时通过类别分组（6-9）自动保留跌倒检测能力。
+  ---
+  1. 数据准备 tools/prepare_10class_coco.py
+
+  作用：生成新的训练/验证数据集
+
+  - 遍历10个动作文件夹（1A-1 ~ 1A-10），读取每个子文件夹的标注JSON
+  - 从图片元数据的 activity_folder（如 "1A-7 Falling while walking"）推导出 action_class=6
+  - 给每个标注写入 attributes.action_class（0-9），修正不可靠的 Activity 字段
+  - 按子文件夹（人）分组做 80/20 split，避免同一人的帧同时出现在 train 和 val 中
+  - 输出到 sensir_coco/annotations/instances_train.json + instances_val.json
+
+  ---
+  2. 数据集读取 coco_pose_dataset.py
+
+  作用：从标注中读取 action_class
+
+  之前：inst['falling'] = attributes.get('falling', 0)
+  现在：inst['action_class'] = attributes.get('action_class')  # 0-9
+        inst['falling'] = action_class >= 6  # 自动推导
+
+  向后兼容：如果标注中没有 action_class，回退到读 falling。
+
+  ---
+  3. 数据打包 custom_pack.py
+
+  作用：把 action_class 打包到训练数据中
+
+  之前只打包 gt_instances.falling（float），现在额外打包 gt_instances.action_class（long tensor, 0-9），让模型的 loss 计算能拿到类别标签。
+
+  ---
+  4. Action Head action_head.py
+
+  作用：分类器从二分类改为10类
+
+  ┌────────────────┬────────────────────┬──────────────────────────────────────────────┐
+  │      项目      │        之前        │                     现在                     │
+  ├────────────────┼────────────────────┼──────────────────────────────────────────────┤
+  │ 输出维度       │ Linear(64, 1)      │ Linear(64, 10)                               │
+  ├────────────────┼────────────────────┼──────────────────────────────────────────────┤
+  │ Loss           │ BCEWithLogits      │ CrossEntropyLoss                             │
+  ├────────────────┼────────────────────┼──────────────────────────────────────────────┤
+  │ 类别权重       │ pos_weight（标量） │ class_weight（10维向量，跌倒类加权2x）       │
+  ├────────────────┼────────────────────┼──────────────────────────────────────────────┤
+  │ predict() 返回 │ (N,) 概率          │ dict{action_probs, action_class, is_falling} │
+  └────────────────┴────────────────────┴──────────────────────────────────────────────┘
+
+  新增 ACTION_CLASSES 常量（10个类别名）和 FALLING_CLASS_IDS={6,7,8,9}。
+
+  Loss 中自动过滤 action_class == -1 的无效标签。
+
+  ---
+  5. 模型主体 rtmdet_with_pose.py 
+
+  作用：训练时提取10类标签，推理时输出10类结果
+
+  - _extract_falling_labels() → _extract_action_labels()：通过 IoU 匹配 RoI 到 GT，提取 action_class（0-9）而非 falling（0/1）
+  - _attach_action()：推理时往检测结果上挂载 action_scores（N×10 概率矩阵）、action_class（预测类别）、is_falling（bool）
+
+  ---
+  6. 配置文件 rtmdet_pose_v8_10class_track.py (新建)
+
+  # 之前
+  num_classes=1, pos_weight=5.0
+
+  # 现在
+  num_classes=10,
+  class_weight=[1.0, 1.0, 1.0, 1.0, 1.0, 1.0,   # 正常动作
+                2.0, 2.0, 2.0, 2.0],               # 跌倒类加权
+
+  评估指标从 FallingMetric 改为 ActionMetric，图片路径更新为 images/。
+
+  ---
+  7. 推理脚本 infer_classifyandpred.py (修改)
+
+  作用：可视化显示具体动作名称
+
+  - 之前：显示 FALLING(0.85) 或 normal(0.12)
+  - 现在：显示 FALL_WALK(0.85) 或 WALKING(0.03) 等具体动作名
+  - 10种动作各有独立颜色编码
+  - Tracker 的 GRU 时序推理适配10类 softmax 输出
+  - 跌倒抑制逻辑保留（静止+无运动高峰→重分类为最佳非跌倒类）
+
+  ---
+  8. 评估指标 falling_metric.py (修改)
+
+  新增 ActionMetric，输出：
+
+  - 10类：混淆矩阵、每类 precision/recall/F1、整体 accuracy、macro-F1
+  - 二分类（自动分组 classes 6-9）：falling 的 precision/recall/F1/AP
+
+  FallingMetric 保留不动，旧配置仍可用。
+
+
+v9 多frame 训练 以及velocity feature
+
+
+
+v10
+骨架动作识别（Skeleton-based Action Recognition）的标准做法。把关键点连成骨骼，用骨骼向量代替独立的关键点坐标，能更好地捕捉身体姿态结构。                 
+                                                            
+  我们的7个关键点自然的骨骼连接：                                                                                                                                           
+                                                                                                                                                                          
+          head(0)                                                                                                                                                           
+            |                                                                                                                                                               
+        shoulder(1)
+         / | \
+        /  |  \
+  hand_R(2) | hand_L(3)
+           |
+         hips(4)
+         /    \
+    foot_R(5) foot_L(6)
+
+  6根骨骼（bones）：
+  bone0: head→shoulder      (颈部)
+  bone1: shoulder→hand_R    (右臂)
+  bone2: shoulder→hand_L    (左臂)
+  bone3: shoulder→hips      (躯干)
+  bone4: hips→foot_R        (右腿)
+  bone5: hips→foot_L        (左腿)
+
+  V10 的特征 = 骨骼向量 + 骨骼角度 + 时序变化：
+
+  ┌───────────────────┬────────┬────────────────────────────────┐
+  │       特征        │  维度  │              说明              │
+  ├───────────────────┼────────┼────────────────────────────────┤
+  │ bone_dx, bone_dy  │ 6×2=12 │ 每根骨骼的方向向量             │
+  ├───────────────────┼────────┼────────────────────────────────┤
+  │ bone_angle        │ 6      │ 每根骨骼的角度（相对垂直方向） │
+  ├───────────────────┼────────┼────────────────────────────────┤
+  │ bone_length       │ 6      │ 每根骨骼的长度                 │
+  ├───────────────────┼────────┼────────────────────────────────┤
+  │ d_angle, d_length │ 6+6=12 │ 角度和长度的帧间变化           │
+  ├───────────────────┼────────┼────────────────────────────────┤
+  │ 总计              │ 36     │ 每帧36维特征                   │
+  └───────────────────┴────────┴────────────────────────────────┘
+
+  这比V9的原始关键点(x,y,vis,dx,dy)更有区分力：
+  - Sitting down → 躯干角度变小，腿弯曲（hip-foot变短）
+  - Standing up → 相反
+  - Falling → 躯干角度急剧变化，整体从竖直→水平
+  - Walking → 两腿交替运动，周期性角度变化
+
+========================================================================================================================
+---                                                                                                                                                                      │
+                                                                                     │
+│ V12: 二分类跌倒 + 规则后处理                                                                                                                                             │                                                                                                                │
+│ 基于V7脚本模式，KptTracker + 规则后处理：                                                                                                                                │
+│ - 用关键点特征(kpt_dim=5)替代骨骼特征                                                                                                                                    │
+│ - action_head.predict返回 (N,) 概率值(binary模式)                                                                                                                        │
+│ - 规则后处理 (仅推理时)：                                                                                                                                                │
+│   - 规则1: 头部关键点y坐标快速下降 → 确认跌倒(提高概率)                                                                                                                  │
+│   - 规则2: 头部持续低位+无运动 → 躺着/已倒地(抑制概率，减少误检)    
+
+V13 多头跌倒检测
+
+架构
+
+共享 GRU 编码器（与 V10 相同），包含三个输出头。
+
+输出头一：动作分类（action）
+输出：10 类
+损失函数：交叉熵损失（类别权重为 [1, 1, 1, 1, 2, 2, 8, 8, 8, 8]）
+用途：完整动作分类
+
+输出头二：姿态状态（state）
+输出：3 类（站立 / 坐下 / 躺下）
+损失函数：交叉熵损失（权重 = 0.5）
+用途：用于跌倒验证的姿态状态判断
+
+输出头三：跌倒检测（fall）
+输出：二分类
+损失函数：Focal Loss（alpha = 0.25，gamma = 2.0，weight = 2.0）
+用途：专用跌倒检测
+
+===============================================================================
+
+
+                                                                                                                             
+  Version         Description           
+                                                                                                                          
+  v6           Base pose version              
+
+  v7       With classification + tracking 
+
+   v8       10-class tracking        x      v8 所有动作序列 然后二分。单frame训练 
+
+   v9       Temporal features       x       
+
+   v10     Bone features                  
+
+   v11     Appearance features       x     
+
+  v12      Binary classification  x        
+
+
+
+
+结果：
+v7: ok的
+  Samples: 1131 (pos=194, neg=937)
+  TP=173 FP=71 TN=866 FN=21
+  Accuracy:  0.9187
+  Precision: 0.7090
+  Recall:    0.8918
+  F1:        0.7900
+  AP:        0.9100
+
+v8：
+--- Action Classification Metrics ---
+                       Prec Recall     F1  Support
+      Standing still  0.021  0.018  0.019      114
+             Walking  0.217  0.664  0.327      110
+        Sitting down  0.000  0.000  0.000       52
+         Standing up  0.000  0.000  0.000      103
+          Lying down  0.289  0.330  0.308      100
+          Getting up  0.000  0.000  0.000      153
+     Falling walking  0.000  0.000  0.000       98 *
+    Falling standing  0.059  0.149  0.085       47 *
+     Falling sitting  0.050  0.032  0.039       31 *
+ Falling standing up  0.333  0.135  0.192       52 *
+
+--- 10-class Summary ---
+  Accuracy:  0.1430
+  Macro-F1:  0.0970
+
+--- Binary Falling (classes 6-9 grouped) ---
+  TP=111 FP=52 TN=580 FN=117
+  Accuracy:  0.8035
+  Precision: 0.6810
+  Recall:    0.4868
+  F1:        0.5678
+  AP:        0.7093
+
+  v9:
+
+--- Action Classification Metrics ---
+                       Prec Recall     F1  Support
+      Standing still  0.797  0.412  0.543      114
+             Walking  0.536  0.473  0.502      110
+        Sitting down  0.000  0.000  0.000       52
+         Standing up  0.000  0.000  0.000      103
+          Lying down  0.000  0.000  0.000      100
+          Getting up  0.000  0.000  0.000      153
+     Falling walking  0.000  0.000  0.000       99 *
+    Falling standing  0.021  0.085  0.033       47 *
+     Falling sitting  0.000  0.000  0.000       31 *
+ Falling standing up  0.192  0.365  0.252       52 *
+
+--- 10-class Summary ---
+  Accuracy:  0.1417
+  Macro-F1:  0.1331
+
+--- Binary Falling (classes 6-9 grouped) ---
+  TP=150 FP=245 TN=387 FN=79
+  Accuracy:  0.6237
+  Precision: 0.3797
+  Recall:    0.6550
+  F1:        0.4808
+  AP:        0.4472
+
+
+
+
+v10: ok的
+--- Action Classification Metrics ---
+                       Prec Recall     F1  Support
+      Standing still  0.533  0.140  0.222      114
+             Walking  0.307  0.527  0.388      110
+        Sitting down  0.078  0.096  0.086       52
+         Standing up  0.105  0.058  0.075      103
+          Lying down  0.000  0.000  0.000      100
+          Getting up  0.000  0.000  0.000      153
+     Falling walking  0.158  0.030  0.051       99 *
+    Falling standing  0.091  0.043  0.058       47 *
+     Falling sitting  0.115  0.387  0.178       31 *
+ Falling standing up  0.282  0.385  0.325       52 *
+
+--- 10-class Summary ---
+  Accuracy:  0.1417
+  Macro-F1:  0.1383
+
+--- Binary Falling (classes 6-9 grouped) ---
+  TP=150 FP=66 TN=566 FN=79
+  Accuracy:  0.8316
+  Precision: 0.6944
+  Recall:    0.6550
+  F1:        0.6742
+  AP:        0.7433
+
+
+v11: 低
+--- Action Classification Metrics ---
+                       Prec Recall     F1  Support
+      Standing still  0.471  0.070  0.122      114
+             Walking  0.409  0.491  0.446      110
+        Sitting down  0.000  0.000  0.000       52
+         Standing up  0.227  0.146  0.178      103
+          Lying down  0.000  0.000  0.000      100
+          Getting up  0.000  0.000  0.000      153
+     Falling walking  0.073  0.030  0.043       99 *
+    Falling standing  0.044  0.085  0.058       47 *
+     Falling sitting  0.103  0.129  0.114       31 *
+ Falling standing up  0.172  0.404  0.241       52 *
+
+--- 10-class Summary ---
+  Accuracy:  0.1266
+  Macro-F1:  0.1202
+
+--- Binary Falling (classes 6-9 grouped) ---
+  TP=168 FP=125 TN=507 FN=61
+  Accuracy:  0.7840
+  Precision: 0.5734
+  Recall:    0.7336
+  F1:        0.6437
+  AP:        0.7037
+------------------------
+v12:  
+--- Action Classification Metrics ---
+                       Prec Recall     F1  Support
+      Standing still  0.160  0.991  0.276      114
+             Walking  0.000  0.000  0.000      110
+        Sitting down  0.000  0.000  0.000       52
+         Standing up  0.000  0.000  0.000      103
+          Lying down  0.000  0.000  0.000      100
+          Getting up  0.000  0.000  0.000      153
+     Falling walking  0.391  0.616  0.478       99 *
+    Falling standing  0.000  0.000  0.000       47 *
+     Falling sitting  0.000  0.000  0.000       31 *
+ Falling standing up  0.000  0.000  0.000       52 *
+
+--- 10-class Summary ---
+  Accuracy:  0.2021
+  Macro-F1:  0.0754
+
+--- Binary Falling (classes 6-9 grouped) ---
+  TP=144 FP=12 TN=620 FN=85
+  Accuracy:  0.8873
+  Precision: 0.9231
+  Recall:    0.6288
+  F1:        0.7481
+  AP:        0.7796
 
 
 
