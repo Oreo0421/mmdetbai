@@ -132,10 +132,10 @@ class RTMDetWithPose(SingleStageDetector):
                 # 用 pose_head 预测的 keypoints 训练（和推理一致，消除分布差异）
                 with torch.no_grad():
                     kpt_features = self._extract_kpt_features_from_roi(roi_feats)
-                gt_falling = self._extract_falling_labels(rois, batch_data_samples)
-                if gt_falling is not None:
+                gt_action = self._extract_action_labels(rois, batch_data_samples)
+                if gt_action is not None:
                     action_losses = self.action_head.loss(
-                        kpt_features, gt_falling)
+                        kpt_features, gt_action)
                     losses.update(action_losses)
                 else:
                     losses['loss_action'] = x[0].sum() * 0
@@ -472,15 +472,19 @@ class RTMDetWithPose(SingleStageDetector):
         gt_falling = torch.tensor(valid_falling, device=device)  # (M,)
         return kpt_features, gt_falling
 
-    def _extract_falling_labels(self, rois, batch_data_samples):
-        """Extract GT falling labels for each RoI via IoU matching.
+    def _extract_action_labels(self, rois, batch_data_samples):
+        """Extract GT action class labels for each RoI via IoU matching.
+
+        Supports both 10-class (action_class 0-9) and binary (falling 0/1).
+        Prefers action_class if available, falls back to falling.
 
         Returns:
-            gt_falling: (N,) falling labels, or None if no matches.
+            gt_labels: (N,) action labels, or None if no matches.
         """
         num_rois = rois.size(0)
         device = rois.device
-        gt_falling = torch.zeros(num_rois, device=device)
+        # Default -1 = invalid (will be filtered by loss)
+        gt_labels = torch.full((num_rois,), -1, device=device, dtype=torch.long)
         has_any = False
 
         for i in range(num_rois):
@@ -506,14 +510,24 @@ class RTMDetWithPose(SingleStageDetector):
                 continue
             idx = int(gt_idx.item())
 
+            # Prefer action_class (0-9), fall back to falling (0/1)
+            action_class = getattr(gt_instances, 'action_class', None)
+            if action_class is not None and idx < len(action_class):
+                val = int(action_class[idx])
+                if val >= 0:
+                    gt_labels[i] = val
+                    has_any = True
+                    continue
+
+            # Fallback: binary falling
             falling = getattr(gt_instances, 'falling', None)
             if falling is not None and idx < len(falling):
-                gt_falling[i] = falling[idx]
-            has_any = True
+                gt_labels[i] = int(falling[idx])
+                has_any = True
 
         if not has_any:
             return None
-        return gt_falling
+        return gt_labels
 
     def _extract_kpt_features_from_roi(self, roi_feats):
         """Extract normalized keypoint features from pose_head for action inference.
@@ -548,13 +562,33 @@ class RTMDetWithPose(SingleStageDetector):
         kpt = torch.stack([pred_x, pred_y, pred_vis], dim=-1)  # (N, K, 3)
         return kpt.reshape(kpt.size(0), 1, -1)  # (N, 1, K*3)
 
-    def _attach_action(self, det_results, roi_map, action_probs):
-        """Attach action prediction scores to detection results."""
+    def _attach_action(self, det_results, roi_map, action_output):
+        """Attach action prediction scores to detection results.
+
+        Handles both binary (legacy Tensor) and multi-class (dict) outputs.
+        For multi-class, attaches:
+            - action_scores: (N, 10) per-class probabilities
+            - action_class: (N,) predicted class IDs
+            - is_falling: (N,) bool
+        For binary (backward compat):
+            - action_scores: (N,) falling probability
+        """
+        is_multiclass = isinstance(action_output, dict)
+
+        if is_multiclass:
+            num_classes = action_output['action_probs'].size(-1)
+
         for inst in det_results:
             if inst is None or len(inst) == 0:
                 continue
             device = inst.bboxes.device
-            inst.action_scores = torch.zeros(len(inst), device=device)
+            n = len(inst)
+            if is_multiclass:
+                inst.action_scores = torch.zeros(n, num_classes, device=device)
+                inst.action_class = torch.zeros(n, dtype=torch.long, device=device)
+                inst.is_falling = torch.zeros(n, dtype=torch.bool, device=device)
+            else:
+                inst.action_scores = torch.zeros(n, device=device)
 
         for i, (img_idx, inst_idx) in enumerate(roi_map):
             if img_idx >= len(det_results):
@@ -562,4 +596,9 @@ class RTMDetWithPose(SingleStageDetector):
             inst = det_results[img_idx]
             if inst is None or inst_idx >= len(inst):
                 continue
-            inst.action_scores[inst_idx] = action_probs[i]
+            if is_multiclass:
+                inst.action_scores[inst_idx] = action_output['action_probs'][i]
+                inst.action_class[inst_idx] = action_output['action_class'][i]
+                inst.is_falling[inst_idx] = action_output['is_falling'][i]
+            else:
+                inst.action_scores[inst_idx] = action_output[i]

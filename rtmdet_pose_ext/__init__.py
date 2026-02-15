@@ -9,7 +9,7 @@ from .heatmap_head_v5 import HeatmapHeadV5
 from .simdr_head_v6 import HeatmapHeadV6
 from .regression_head import CoordinateRegressionHead
 from .action_head import ActionTemporalHead
-from .falling_metric import FallingMetric
+from .falling_metric import FallingMetric, ActionMetric
 from .rtmdet_with_pose import RTMDetWithPose
 
 __all__ = [
@@ -26,6 +26,7 @@ __all__ = [
     'CoordinateRegressionHead',
     'ActionTemporalHead',
     'FallingMetric',
+    'ActionMetric',
     'RTMDetWithPose',
     'CopyImgIdToId',
 ]
@@ -44,5 +45,6 @@ print("  - HeatmapHeadV6")
 print("  - CoordinateRegressionHead")
 print("  - ActionTemporalHead")
 print("  - FallingMetric")
+print("  - ActionMetric")
 print("  - RTMDetWithPose")
 print("  - CopyImgIdToId")

@@ -27,11 +27,20 @@ class CocoPoseDataset(CocoDataset):
                     ann = raw_ann_info[i]
                     if 'keypoints' in ann:
                         inst['keypoints'] = ann['keypoints']
-                    # 提取 falling 属性 (binary: 0/1)
+                    # 提取动作类别和 falling 属性
                     attributes = ann.get('attributes', {})
                     if isinstance(attributes, dict):
-                        inst['falling'] = int(attributes.get('falling', 0))
+                        # 优先使用 action_class (0-9)
+                        if 'action_class' in attributes:
+                            action_class = int(attributes['action_class'])
+                            inst['action_class'] = action_class
+                            inst['falling'] = int(action_class >= 6)
+                        else:
+                            # 向后兼容：回退到 falling 属性
+                            inst['falling'] = int(attributes.get('falling', 0))
+                            inst['action_class'] = -1  # unknown
                     else:
                         inst['falling'] = 0
+                        inst['action_class'] = -1
 
         return data_info

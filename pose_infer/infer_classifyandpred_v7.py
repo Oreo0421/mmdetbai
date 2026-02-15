@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-RTMDet-Pose V8 推理脚本: 检测 + 姿态 + 10类动作分类 + ByteTrack 跟踪
+RTMDet-Pose V7 推理脚本: 检测 + 姿态 + 跌倒分类 + ByteTrack 跟踪
 
 支持两种模式:
   1. 图片文件夹 (单帧推理, 无跟踪)
@@ -23,27 +23,12 @@ from mmdet.registry import MODELS
 from mmengine.config import Config
 from mmengine.dataset import Compose
 
-# ---- 10 Action Classes ----
-ACTION_NAMES = [
-    'STANDING',       # 0
-    'WALKING',        # 1
-    'SITTING_DOWN',   # 2
-    'STANDING_UP',    # 3
-    'LYING_DOWN',     # 4
-    'GETTING_UP',     # 5
-    'FALL_WALK',      # 6
-    'FALL_STAND',     # 7
-    'FALL_SIT',       # 8
-    'FALL_STANDUP',   # 9
-]
-FALLING_CLASSES = {6, 7, 8, 9}
-
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='RTMDet-Pose V8: Detection + Pose + 10-class Action + Tracking')
+        description='RTMDet-Pose V7: Detection + Pose + Falling + Tracking')
     parser.add_argument('--config',
-                        default='/home/tbai/mmdetection/mmdetection/configs/rtmdet_bai/rtmdet_pose_v8_10class_track.py',
+                        default='/home/tbai/mmdetection/mmdetection/rtmdet_pose_v7_withclass_track.py',
                         help='配置文件路径')
     parser.add_argument('--checkpoint',
                         default=None,
@@ -116,27 +101,13 @@ KPT_COLORS = [
     (255, 0, 255),  # 6: 紫
 ]
 LIMB_COLOR = (0, 255, 128)
-COLOR_NORMAL = (0, 255, 0)     # 绿色 - 正常
-COLOR_FALLING = (0, 0, 255)    # 红色 - 跌倒
+COLOR_NORMAL = (0, 255, 0)     #  - normal
+COLOR_FALLING = (0, 0, 255)    #  - fall
 COLOR_TRACK = [
     (255, 128, 0), (0, 255, 128), (128, 0, 255),
     (255, 255, 0), (0, 128, 255), (255, 0, 128),
     (128, 255, 0), (0, 255, 255), (255, 0, 255),
     (128, 128, 255),
-]
-
-# Per-action-class colors (BGR)
-ACTION_COLORS = [
-    (0, 255, 0),      # 0: Standing still  - green
-    (255, 200, 0),    # 1: Walking          - cyan
-    (255, 128, 0),    # 2: Sitting down     - light blue
-    (200, 255, 0),    # 3: Standing up      - green-cyan
-    (0, 200, 200),    # 4: Lying down       - dark yellow
-    (128, 255, 128),  # 5: Getting up       - light green
-    (0, 0, 255),      # 6: Falling walk     - red
-    (0, 0, 200),      # 7: Falling stand    - dark red
-    (0, 50, 255),     # 8: Falling sit      - red-orange
-    (0, 0, 180),      # 9: Falling standup  - darker red
 ]
 
 
@@ -164,14 +135,12 @@ def inference_single(model, img_path, pipeline):
 
 COLOR_LYING = (255, 165, 0)    # 橙色 - 躺着(被抑制的跌倒)
 
-def visualize(img, pred, args, track_id=None, temporal_info=None,
-              raw_info=None):
-    """可视化检测框 + 关键点 + 动作类别 + 跌倒状态
+def visualize(img, pred, args, track_id=None, temporal_score=None,
+              raw_score=None):
+    """可视化检测框 + 关键点 + 跌倒状态
 
     Args:
-        temporal_info: For multi-class: (action_class_id, falling_prob, is_falling)
-                       For binary (legacy): float score
-        raw_info: Raw (unsuppressed) info, same format as temporal_info
+        raw_score: GRU原始分数(未抑制), 用于区分 lying vs normal
     """
     img_vis = img.copy()
 
@@ -179,58 +148,23 @@ def visualize(img, pred, args, track_id=None, temporal_info=None,
     bbox_scores = pred.scores.cpu().numpy()
     keypoints = pred.keypoints.cpu().numpy() if hasattr(pred, 'keypoints') else np.zeros((len(bboxes), 0, 2))
     kpt_scores = pred.keypoint_scores.cpu().numpy() if hasattr(pred, 'keypoint_scores') else np.zeros((len(bboxes), 0))
-
-    # Handle multi-class action_scores (N, 10) or binary (N,)
-    has_action = hasattr(pred, 'action_scores')
-    is_multiclass = (has_action and pred.action_scores.dim() == 2
-                     and pred.action_scores.size(-1) > 1)
+    action_scores = pred.action_scores.cpu().numpy() if hasattr(pred, 'action_scores') else np.zeros(len(bboxes))
 
     for idx in range(len(bboxes)):
         det_score = bbox_scores[idx]
+        act_score = temporal_score if temporal_score is not None else action_scores[idx]
+        is_falling = act_score >= args.fall_thr
 
-        # Determine action class and falling status
-        if temporal_info is not None:
-            # Tracker mode: temporal_info is (action_class, fall_prob, is_falling)
-            if isinstance(temporal_info, tuple) and len(temporal_info) == 3:
-                act_cls, fall_prob, is_falling = temporal_info
-            else:
-                # Legacy binary: temporal_info is a float
-                act_cls = -1
-                fall_prob = float(temporal_info)
-                is_falling = fall_prob >= args.fall_thr
-        elif is_multiclass:
-            probs = pred.action_scores[idx].cpu().numpy()
-            act_cls = int(probs.argmax())
-            fall_prob = float(probs[6:].sum())
-            is_falling = act_cls in FALLING_CLASSES
-        elif has_action:
-            # Legacy binary
-            act_score = float(pred.action_scores[idx].cpu())
-            act_cls = -1
-            fall_prob = act_score
-            is_falling = act_score >= args.fall_thr
-        else:
-            act_cls = -1
-            fall_prob = 0.0
-            is_falling = False
+        # 判断是否被运动抑制 (raw_score高但act_score被衰减 → lying)
+        is_suppressed = (raw_score is not None
+                         and raw_score >= args.fall_thr
+                         and not is_falling)
 
-        # Check suppression (raw_info had falling but temporal_info doesn't)
-        is_suppressed = False
-        if raw_info is not None:
-            if isinstance(raw_info, tuple) and len(raw_info) == 3:
-                _, raw_fall_prob, raw_is_falling = raw_info
-            else:
-                raw_fall_prob = float(raw_info)
-                raw_is_falling = raw_fall_prob >= args.fall_thr
-            is_suppressed = raw_is_falling and not is_falling
-
-        # Box color: based on action class
+        # 框颜色: 跌倒=红, 躺着=橙, 正常=绿
         if is_falling:
-            box_color = ACTION_COLORS[act_cls] if 0 <= act_cls < len(ACTION_COLORS) else COLOR_FALLING
+            box_color = COLOR_FALLING
         elif is_suppressed:
             box_color = COLOR_LYING
-        elif 0 <= act_cls < len(ACTION_COLORS):
-            box_color = ACTION_COLORS[act_cls]
         else:
             box_color = COLOR_NORMAL
         if track_id is not None and not is_falling and not is_suppressed:
@@ -239,29 +173,25 @@ def visualize(img, pred, args, track_id=None, temporal_info=None,
         x1, y1, x2, y2 = map(int, bboxes[idx][:4])
         cv2.rectangle(img_vis, (x1, y1), (x2, y2), box_color, args.thickness)
 
-        # Label text
+        # 标签文字
         label_parts = [f'{det_score:.2f}']
-        if act_cls >= 0 and act_cls < len(ACTION_NAMES):
-            action_name = ACTION_NAMES[act_cls]
-            label_parts.append(f'{action_name}({fall_prob:.2f})')
-        elif is_falling:
-            label_parts.append(f'FALLING({fall_prob:.2f})')
+        if is_falling:
+            label_parts.append(f'FALLING({act_score:.2f})')
         elif is_suppressed:
-            raw_fp = raw_fall_prob if isinstance(raw_info, tuple) else float(raw_info)
-            label_parts.append(f'LYING({raw_fp:.2f})')
-        elif fall_prob > 0:
-            label_parts.append(f'normal({fall_prob:.2f})')
+            label_parts.append(f'LYING({raw_score:.2f})')
+        elif act_score > 0:
+            label_parts.append(f'normal({act_score:.2f})')
         if track_id is not None:
             label_parts.insert(0, f'ID:{track_id}')
         label = ' '.join(label_parts)
 
-        # Text background
+        # 文字背景
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
         cv2.rectangle(img_vis, (x1, y1 - th - 6), (x1 + tw + 4, y1), box_color, -1)
         cv2.putText(img_vis, label, (x1 + 2, y1 - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
-        # Fall warning
+        # 跌倒警告
         if is_falling:
             cv2.putText(img_vis, 'FALL DETECTED', (x1, y2 + 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, COLOR_FALLING, 2)
@@ -271,7 +201,7 @@ def visualize(img, pred, args, track_id=None, temporal_info=None,
         kpts = keypoints[idx]
         scrs = kpt_scores[idx]
 
-        # Skeleton
+        # 骨架
         if args.skeleton:
             for (a, b) in args.skeleton:
                 if a < len(kpts) and b < len(kpts):
@@ -280,7 +210,7 @@ def visualize(img, pred, args, track_id=None, temporal_info=None,
                         pt2 = (int(kpts[b][0]), int(kpts[b][1]))
                         cv2.line(img_vis, pt1, pt2, LIMB_COLOR, args.thickness)
 
-        # Keypoints
+        # 关键点
         for i, (kpt, score) in enumerate(zip(kpts, scrs)):
             if score > args.kpt_thr:
                 x, y = int(kpt[0]), int(kpt[1])
@@ -413,44 +343,22 @@ class SimpleTracker:
                 self.motion_hist[tid].append(motion)
 
                 seq = torch.stack(list(self.kpt_buffers[tid])).unsqueeze(0).to(device)
-                pred_out = self.model.action_head.predict(seq)
-
-                # Handle both multi-class (dict) and binary (tensor) output
-                if isinstance(pred_out, dict):
-                    probs = pred_out['action_probs'].squeeze(0).cpu().numpy()
-                    act_cls = int(probs.argmax())
-                    fall_prob = float(probs[6:].sum())
-                    is_falling = act_cls in FALLING_CLASSES
-                    raw_info = (act_cls, fall_prob, is_falling)
-                else:
-                    # Legacy binary
-                    score = float(pred_out.squeeze())
-                    is_falling = score >= 0.5
-                    fall_prob = score
-                    act_cls = -1
-                    raw_info = score
+                prob = self.model.action_head.predict(seq)
+                score = float(prob.squeeze())
+                raw_score = score
 
                 # 抑制逻辑:
                 #   当前静止 + GRU说跌倒 → 检查最近有没有运动高峰
-                #   有高峰 = 真摔倒(倒下后躺着) → 保留
-                #   无高峰 = 一直躺着/坐着 → 抑制
-                if is_falling and self.stable_count.get(tid, 0) >= self.stable_frames:
+                #   有高峰 = 真摔倒(倒下后躺着) → 保留分数
+                #   无高峰 = 一直躺着/坐着 → 抑制分数
+                if self.stable_count.get(tid, 0) >= self.stable_frames:
                     peak = max(self.motion_hist[tid])
                     if peak < self.spike_thr:
-                        # Suppress: reclassify as non-falling
-                        if isinstance(pred_out, dict):
-                            # Pick best non-falling class
-                            non_fall_probs = probs[:6]
-                            act_cls = int(non_fall_probs.argmax())
-                            fall_prob = fall_prob * 0.1
-                            is_falling = False
+                        # 最近N帧从未有大运动 → 一直躺/坐 → 抑制
+                        score = score * 0.1
+                    # else: 有运动高峰 → 真摔倒后静止 → 不抑制
 
-                if isinstance(pred_out, dict):
-                    temporal_info = (act_cls, fall_prob, is_falling)
-                else:
-                    temporal_info = fall_prob if not is_falling else score
-
-                temporal_scores[tid] = (temporal_info, raw_info)
+                temporal_scores[tid] = (score, raw_score)
 
         # Clean stale tracks
         active = set(track_inst.instances_id.tolist()) if num_tracks > 0 else set()
@@ -516,14 +424,10 @@ def run_images(model, args):
             img_vis = img.copy()
             for t_idx in range(len(track_inst)):
                 tid = int(track_inst.instances_id[t_idx])
-                default_info = ((0, 0.0, False), (0, 0.0, False))
-                t_info, t_raw = temporal_scores.get(tid, default_info)
-
-                # Determine falling status
-                if isinstance(t_info, tuple) and len(t_info) == 3:
-                    is_fall = t_info[2]  # is_falling
-                else:
-                    is_fall = float(t_info) >= args.fall_thr
+                score_pair = temporal_scores.get(tid, (0.0, 0.0))
+                t_score, t_raw = (score_pair if isinstance(score_pair, tuple)
+                                  else (score_pair, score_pair))
+                is_fall = t_score >= args.fall_thr
 
                 # Create a single-instance pred for visualization
                 from mmengine.structures import InstanceData
@@ -533,26 +437,17 @@ def run_images(model, args):
                 if hasattr(track_inst, 'keypoints'):
                     single.keypoints = track_inst.keypoints[t_idx:t_idx+1]
                     single.keypoint_scores = track_inst.keypoint_scores[t_idx:t_idx+1]
-                single.action_scores = torch.zeros(1)  # placeholder
+                single.action_scores = torch.tensor([t_score])
 
                 img_vis = visualize(img_vis, single, args,
-                                    track_id=tid, temporal_info=t_info,
-                                    raw_info=t_raw)
+                                    track_id=tid, temporal_score=t_score,
+                                    raw_score=t_raw)
                 if is_fall:
                     fall_count += 1
 
             n_tracks = len(track_inst)
-            track_summaries = []
-            for j in range(n_tracks):
-                tid_j = int(track_inst.instances_id[j])
-                info_j = temporal_scores.get(tid_j, default_info)[0]
-                if isinstance(info_j, tuple) and len(info_j) == 3:
-                    cls_j, fp_j, _ = info_j
-                    name_j = ACTION_NAMES[cls_j] if 0 <= cls_j < len(ACTION_NAMES) else '?'
-                    track_summaries.append(f'{name_j}({fp_j:.2f})')
-                else:
-                    track_summaries.append(f'{float(info_j):.2f}')
-            print(f"{n_tracks} tracks, actions={track_summaries}")
+            print(f"{n_tracks} tracks, "
+                  f"scores={[f'{temporal_scores.get(int(track_inst.instances_id[j]),(0,0))[0]:.2f}' for j in range(n_tracks)]}")
 
         else:
             # Single-frame mode (no tracker)
@@ -572,27 +467,12 @@ def run_images(model, args):
                 print("no valid detection")
                 continue
 
-            # Count falling detections
-            if hasattr(pred, 'action_class') and pred.action_class is not None:
-                act_classes = pred.action_class.cpu().numpy()
-                n_fall = int(sum(c in FALLING_CLASSES for c in act_classes))
-                action_names_str = [ACTION_NAMES[c] if 0 <= c < len(ACTION_NAMES) else '?' for c in act_classes]
-            elif hasattr(pred, 'action_scores'):
-                action_scores = pred.action_scores.cpu().numpy()
-                if action_scores.ndim == 2 and action_scores.shape[-1] > 1:
-                    act_classes = action_scores.argmax(axis=-1)
-                    n_fall = int(sum(c in FALLING_CLASSES for c in act_classes))
-                    action_names_str = [ACTION_NAMES[c] for c in act_classes]
-                else:
-                    n_fall = int((action_scores >= args.fall_thr).sum())
-                    action_names_str = [f'{s:.2f}' for s in action_scores.flatten()]
-            else:
-                n_fall = 0
-                action_names_str = []
+            action_scores = pred.action_scores.cpu().numpy() if hasattr(pred, 'action_scores') else np.zeros(len(pred))
+            n_fall = int((action_scores >= args.fall_thr).sum())
             fall_count += n_fall
 
             img_vis = visualize(img, pred, args)
-            print(f"{len(pred)} dets, action={action_names_str}"
+            print(f"{len(pred)} dets, action={action_scores.round(2).tolist()}"
                   f"{' FALL!' if n_fall > 0 else ''}")
 
         # Save
@@ -663,16 +543,12 @@ def run_video(model, args):
             if img is not None and track_inst is not None and len(track_inst) > 0:
                 img_vis = frame.copy()
                 has_fall = False
-                default_info = ((0, 0.0, False), (0, 0.0, False))
                 for t_idx in range(len(track_inst)):
                     tid = int(track_inst.instances_id[t_idx])
-                    t_info, t_raw = temporal_scores.get(tid, default_info)
-
-                    if isinstance(t_info, tuple) and len(t_info) == 3:
-                        is_fall = t_info[2]
-                    else:
-                        is_fall = float(t_info) >= args.fall_thr
-                    if is_fall:
+                    score_pair = temporal_scores.get(tid, (0.0, 0.0))
+                    t_score, t_raw = (score_pair if isinstance(score_pair, tuple)
+                                      else (score_pair, score_pair))
+                    if t_score >= args.fall_thr:
                         has_fall = True
 
                     from mmengine.structures import InstanceData
@@ -682,10 +558,10 @@ def run_video(model, args):
                     if hasattr(track_inst, 'keypoints'):
                         single.keypoints = track_inst.keypoints[t_idx:t_idx+1]
                         single.keypoint_scores = track_inst.keypoint_scores[t_idx:t_idx+1]
-                    single.action_scores = torch.zeros(1)
+                    single.action_scores = torch.tensor([t_score])
                     img_vis = visualize(img_vis, single, args,
-                                        track_id=tid, temporal_info=t_info,
-                                        raw_info=t_raw)
+                                        track_id=tid, temporal_score=t_score,
+                                        raw_score=t_raw)
 
                 if has_fall:
                     fall_frames += 1
@@ -739,7 +615,7 @@ def main():
     args = parse_args()
 
     print("=" * 70)
-    print("RTMDet-Pose V8: Detection + Pose + 10-class Action + Tracking")
+    print("RTMDet-Pose V7: Detection + Pose + Falling + Tracking")
     print("=" * 70)
     print(f"Config:     {args.config}")
     print(f"Checkpoint: {args.checkpoint}")
