@@ -1,0 +1,25 @@
+{
+  "video_id": "person_AAE2_train",
+  "fps": 5,
+  "person_id": "AAE2",
+  "total_frames": 54,
+  "duration_sec": 10.8,
+  "intervals": {
+    "fall": [
+      [
+        0,
+        53
+      ]
+    ],
+    "sit": [],
+    "lie": []
+  },
+  "clips": [
+    {
+      "source": "1A-8_Falling_while_trying_to_stand_AAE2",
+      "action_class": 7,
+      "start_frame": 0,
+      "end_frame": 53
+    }
+  ]
+}

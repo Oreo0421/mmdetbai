@@ -1,0 +1,20 @@
+{
+  "video_id": "person_AAC2_train",
+  "fps": 5,
+  "person_id": "AAC2",
+  "total_frames": 69,
+  "duration_sec": 13.8,
+  "intervals": {
+    "fall": [],
+    "sit": [],
+    "lie": []
+  },
+  "clips": [
+    {
+      "source": "1A-2_Walking_AAC2",
+      "action_class": 1,
+      "start_frame": 0,
+      "end_frame": 68
+    }
+  ]
+}

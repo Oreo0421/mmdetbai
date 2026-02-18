@@ -1,0 +1,73 @@
+{
+  "video_id": "person_AAE_train",
+  "fps": 5,
+  "person_id": "AAE",
+  "total_frames": 448,
+  "duration_sec": 89.6,
+  "intervals": {
+    "fall": [
+      [
+        264,
+        310
+      ],
+      [
+        314,
+        374
+      ],
+      [
+        378,
+        447
+      ]
+    ],
+    "sit": [
+      [
+        34,
+        152
+      ]
+    ],
+    "lie": [
+      [
+        156,
+        260
+      ]
+    ]
+  },
+  "clips": [
+    {
+      "source": "1A-6_Getting_up_from_lying_down_AAE",
+      "action_class": 5,
+      "start_frame": 0,
+      "end_frame": 30
+    },
+    {
+      "source": "1A-3_Sitting_down_AAE",
+      "action_class": 2,
+      "start_frame": 34,
+      "end_frame": 152
+    },
+    {
+      "source": "1A-5_Lying_down_AAE",
+      "action_class": 4,
+      "start_frame": 156,
+      "end_frame": 260
+    },
+    {
+      "source": "1A-7_Falling_while_walking_AAE",
+      "action_class": 6,
+      "start_frame": 264,
+      "end_frame": 310
+    },
+    {
+      "source": "1A-10_Falling_and_immediately_standing_up_AAE",
+      "action_class": 9,
+      "start_frame": 314,
+      "end_frame": 374
+    },
+    {
+      "source": "1A-9_Falling_while_trying_to_sit_AAE",
+      "action_class": 8,
+      "start_frame": 378,
+      "end_frame": 447
+    }
+  ]
+}

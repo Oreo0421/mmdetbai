@@ -1,0 +1,36 @@
+{
+  "video_id": "person_AAD_train",
+  "fps": 5,
+  "person_id": "AAD",
+  "total_frames": 81,
+  "duration_sec": 16.2,
+  "intervals": {
+    "fall": [
+      [
+        58,
+        80
+      ]
+    ],
+    "sit": [],
+    "lie": [
+      [
+        0,
+        54
+      ]
+    ]
+  },
+  "clips": [
+    {
+      "source": "1A-5_Lying_down_AAD",
+      "action_class": 4,
+      "start_frame": 0,
+      "end_frame": 54
+    },
+    {
+      "source": "1A-8_Falling_while_trying_to_stand_AAD",
+      "action_class": 7,
+      "start_frame": 58,
+      "end_frame": 80
+    }
+  ]
+}

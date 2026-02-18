@@ -1,0 +1,91 @@
+{
+  "video_id": "person_AAF_train",
+  "fps": 5,
+  "person_id": "AAF",
+  "total_frames": 790,
+  "duration_sec": 158.0,
+  "intervals": {
+    "fall": [
+      [
+        606,
+        683
+      ],
+      [
+        687,
+        748
+      ],
+      [
+        752,
+        789
+      ]
+    ],
+    "sit": [
+      [
+        508,
+        602
+      ]
+    ],
+    "lie": [
+      [
+        391,
+        504
+      ]
+    ]
+  },
+  "clips": [
+    {
+      "source": "1A-4_Standing_up_AAF",
+      "action_class": 3,
+      "start_frame": 0,
+      "end_frame": 56
+    },
+    {
+      "source": "1A-6_Getting_up_from_lying_down_AAF",
+      "action_class": 5,
+      "start_frame": 60,
+      "end_frame": 144
+    },
+    {
+      "source": "1A-1_Standing_still_AAF",
+      "action_class": 0,
+      "start_frame": 148,
+      "end_frame": 274
+    },
+    {
+      "source": "1A-2_Walking_AAF",
+      "action_class": 1,
+      "start_frame": 278,
+      "end_frame": 387
+    },
+    {
+      "source": "1A-5_Lying_down_AAF",
+      "action_class": 4,
+      "start_frame": 391,
+      "end_frame": 504
+    },
+    {
+      "source": "1A-3_Sitting_down_AAF",
+      "action_class": 2,
+      "start_frame": 508,
+      "end_frame": 602
+    },
+    {
+      "source": "1A-9_Falling_while_trying_to_sit_AAF",
+      "action_class": 8,
+      "start_frame": 606,
+      "end_frame": 683
+    },
+    {
+      "source": "1A-8_Falling_while_trying_to_stand_AAF",
+      "action_class": 7,
+      "start_frame": 687,
+      "end_frame": 748
+    },
+    {
+      "source": "1A-10_Falling_and_immediately_standing_up_AAF",
+      "action_class": 9,
+      "start_frame": 752,
+      "end_frame": 789
+    }
+  ]
+}

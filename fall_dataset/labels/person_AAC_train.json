@@ -1,0 +1,59 @@
+{
+  "video_id": "person_AAC_train",
+  "fps": 5,
+  "person_id": "AAC",
+  "total_frames": 340,
+  "duration_sec": 68.0,
+  "intervals": {
+    "fall": [
+      [
+        272,
+        289
+      ],
+      [
+        293,
+        339
+      ]
+    ],
+    "sit": [],
+    "lie": []
+  },
+  "clips": [
+    {
+      "source": "1A-4_Standing_up_AAC",
+      "action_class": 3,
+      "start_frame": 0,
+      "end_frame": 36
+    },
+    {
+      "source": "1A-2_Walking_AAC",
+      "action_class": 1,
+      "start_frame": 40,
+      "end_frame": 185
+    },
+    {
+      "source": "1A-1_Standing_still_AAC",
+      "action_class": 0,
+      "start_frame": 189,
+      "end_frame": 225
+    },
+    {
+      "source": "1A-6_Getting_up_from_lying_down_AAC",
+      "action_class": 5,
+      "start_frame": 229,
+      "end_frame": 268
+    },
+    {
+      "source": "1A-7_Falling_while_walking_AAC",
+      "action_class": 6,
+      "start_frame": 272,
+      "end_frame": 289
+    },
+    {
+      "source": "1A-10_Falling_and_immediately_standing_up_AAC",
+      "action_class": 9,
+      "start_frame": 293,
+      "end_frame": 339
+    }
+  ]
+}

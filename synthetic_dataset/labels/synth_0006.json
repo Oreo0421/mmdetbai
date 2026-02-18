@@ -1,0 +1,14 @@
+{
+  "fps": 25,
+  "intervals": {
+    "fall": [],
+    "sit": [],
+    "lie": [
+      [
+        557,
+        660
+      ]
+    ]
+  },
+  "video_id": "synth_0006"
+}

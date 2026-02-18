@@ -1,0 +1,95 @@
+{
+  "video_id": "person_AAG_train",
+  "fps": 5,
+  "person_id": "AAG",
+  "total_frames": 1586,
+  "duration_sec": 317.2,
+  "intervals": {
+    "fall": [
+      [
+        902,
+        1091
+      ],
+      [
+        1095,
+        1260
+      ],
+      [
+        1264,
+        1424
+      ],
+      [
+        1428,
+        1585
+      ]
+    ],
+    "sit": [
+      [
+        565,
+        730
+      ]
+    ],
+    "lie": [
+      [
+        734,
+        898
+      ]
+    ]
+  },
+  "clips": [
+    {
+      "source": "1A-1_Standing_still_AAG",
+      "action_class": 0,
+      "start_frame": 0,
+      "end_frame": 179
+    },
+    {
+      "source": "1A-4_Standing_up_AAG",
+      "action_class": 3,
+      "start_frame": 183,
+      "end_frame": 373
+    },
+    {
+      "source": "1A-2_Walking_AAG",
+      "action_class": 1,
+      "start_frame": 377,
+      "end_frame": 561
+    },
+    {
+      "source": "1A-3_Sitting_down_AAG",
+      "action_class": 2,
+      "start_frame": 565,
+      "end_frame": 730
+    },
+    {
+      "source": "1A-5_Lying_down_AAG",
+      "action_class": 4,
+      "start_frame": 734,
+      "end_frame": 898
+    },
+    {
+      "source": "1A-9_Falling_while_trying_to_sit_AAG",
+      "action_class": 8,
+      "start_frame": 902,
+      "end_frame": 1091
+    },
+    {
+      "source": "1A-7_Falling_while_walking_AAG",
+      "action_class": 6,
+      "start_frame": 1095,
+      "end_frame": 1260
+    },
+    {
+      "source": "1A-8_Falling_while_trying_to_stand_AAG",
+      "action_class": 7,
+      "start_frame": 1264,
+      "end_frame": 1424
+    },
+    {
+      "source": "1A-10_Falling_and_immediately_standing_up_AAG",
+      "action_class": 9,
+      "start_frame": 1428,
+      "end_frame": 1585
+    }
+  ]
+}

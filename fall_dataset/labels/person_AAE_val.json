@@ -1,0 +1,43 @@
+{
+  "video_id": "person_AAE_val",
+  "fps": 5,
+  "person_id": "AAE",
+  "total_frames": 383,
+  "duration_sec": 76.6,
+  "intervals": {
+    "fall": [
+      [
+        336,
+        382
+      ]
+    ],
+    "sit": [],
+    "lie": []
+  },
+  "clips": [
+    {
+      "source": "1A-4_Standing_up_AAE",
+      "action_class": 3,
+      "start_frame": 0,
+      "end_frame": 102
+    },
+    {
+      "source": "1A-2_Walking_AAE",
+      "action_class": 1,
+      "start_frame": 106,
+      "end_frame": 215
+    },
+    {
+      "source": "1A-1_Standing_still_AAE",
+      "action_class": 0,
+      "start_frame": 219,
+      "end_frame": 332
+    },
+    {
+      "source": "1A-8_Falling_while_trying_to_stand_AAE",
+      "action_class": 7,
+      "start_frame": 336,
+      "end_frame": 382
+    }
+  ]
+}

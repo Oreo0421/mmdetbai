@@ -1,0 +1,36 @@
+{
+  "video_id": "person_AAB_val",
+  "fps": 5,
+  "person_id": "AAB",
+  "total_frames": 107,
+  "duration_sec": 21.4,
+  "intervals": {
+    "fall": [
+      [
+        55,
+        106
+      ]
+    ],
+    "sit": [
+      [
+        0,
+        51
+      ]
+    ],
+    "lie": []
+  },
+  "clips": [
+    {
+      "source": "1A-3_Sitting_down_AAB",
+      "action_class": 2,
+      "start_frame": 0,
+      "end_frame": 51
+    },
+    {
+      "source": "1A-10_Falling_and_immediately_standing_up_AAB",
+      "action_class": 9,
+      "start_frame": 55,
+      "end_frame": 106
+    }
+  ]
+}

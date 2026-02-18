@@ -1,0 +1,20 @@
+{
+  "video_id": "person_AAG_val",
+  "fps": 5,
+  "person_id": "AAG",
+  "total_frames": 153,
+  "duration_sec": 30.6,
+  "intervals": {
+    "fall": [],
+    "sit": [],
+    "lie": []
+  },
+  "clips": [
+    {
+      "source": "1A-6_Getting_up_from_lying_down_AAG",
+      "action_class": 5,
+      "start_frame": 0,
+      "end_frame": 152
+    }
+  ]
+}

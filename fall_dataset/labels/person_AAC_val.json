@@ -1,0 +1,36 @@
+{
+  "video_id": "person_AAC_val",
+  "fps": 5,
+  "person_id": "AAC",
+  "total_frames": 134,
+  "duration_sec": 26.8,
+  "intervals": {
+    "fall": [
+      [
+        103,
+        133
+      ]
+    ],
+    "sit": [],
+    "lie": [
+      [
+        0,
+        99
+      ]
+    ]
+  },
+  "clips": [
+    {
+      "source": "1A-5_Lying_down_AAC",
+      "action_class": 4,
+      "start_frame": 0,
+      "end_frame": 99
+    },
+    {
+      "source": "1A-9_Falling_while_trying_to_sit_AAC",
+      "action_class": 8,
+      "start_frame": 103,
+      "end_frame": 133
+    }
+  ]
+}

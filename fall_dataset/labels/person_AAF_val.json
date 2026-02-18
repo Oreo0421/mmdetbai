@@ -1,0 +1,25 @@
+{
+  "video_id": "person_AAF_val",
+  "fps": 5,
+  "person_id": "AAF",
+  "total_frames": 99,
+  "duration_sec": 19.8,
+  "intervals": {
+    "fall": [
+      [
+        0,
+        98
+      ]
+    ],
+    "sit": [],
+    "lie": []
+  },
+  "clips": [
+    {
+      "source": "1A-7_Falling_while_walking_AAF",
+      "action_class": 6,
+      "start_frame": 0,
+      "end_frame": 98
+    }
+  ]
+}

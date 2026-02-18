@@ -1,22 +1,31 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-RTMDet-Pose V12 Binary 推理脚本: 二分类跌倒检测 + 规则后处理
+RTMDet-Pose V13 Multi-Head 推理脚本: 检测 + 姿态 + 多头动作分类 + ByteTrack 跟踪
 
-使用关键点特征(kpt_dim=5: x, y, vis, dx, dy) + GRU时序分类
-action_head.predict返回 (N,) 概率值 (binary模式)
+三个分类头:
+  1. action_head: 10类动作分类
+  2. state_head:  3类姿态 (upright/sit/lie)
+  3. fall_head:   二分类跌倒检测 (focal loss训练, 对跌倒更敏感)
 
-规则后处理 (仅推理时):
-  规则1: 头部关键点y坐标快速下降 → 确认跌倒 (提高概率)
-  规则2: 头部持续低位+无运动 → 躺着/已倒地 (抑制概率，减少误检)
+跌倒判定: fall_prob (专用跌倒头) 为主, 结合 action 类别辅助
+  - 主判定: fall_prob >= fall_thr → 跌倒
+  - 辅助:   action_class in {6,7,8,9} → 跌倒
+  - 综合:   max(fall_prob, action_fall_prob) >= fall_thr
 
 遍历 infer/{action}/{camera}/undistorted_stitched_png/*.png
 输出到 output/{action}/{camera}/*.png
 
 Usage:
-  python tools/infer_v12_binary.py \
-      --input /home/tbai/Desktop/infer \
-      --output /home/tbai/Desktop/fall_infer/v12
+  python tools/infer_v13_multihead.py \\
+      --input /home/tbai/Desktop/infer \\
+      --output /home/tbai/Desktop/fall_infer/v13
+
+  # 用训练好的最佳ckpt
+  python tools/infer_v13_multihead.py \\
+      --checkpoint work_dirs/rtmdet_pose_v13/best_*.pth \\
+      --input /home/tbai/Desktop/infer \\
+      --output /home/tbai/Desktop/fall_infer/v13
 """
 
 import os
@@ -24,6 +33,8 @@ os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 import cv2
 import numpy as np
+import glob
+import math
 import collections
 import torch
 import argparse
@@ -35,8 +46,26 @@ from mmengine.dataset import Compose
 from mmengine.structures import InstanceData
 
 
-# Skeleton connections for visualization
-SKELETON = [
+# ---- 10 Action Classes ----
+ACTION_CLASSES = [
+    'Standing still',       # 0
+    'Walking',              # 1
+    'Sitting down',         # 2
+    'Standing up',          # 3
+    'Lying down',           # 4
+    'Getting up',           # 5
+    'Falling walking',      # 6  *
+    'Falling standing',     # 7  *
+    'Falling sitting',      # 8  *
+    'Falling standing up',  # 9  *
+]
+FALLING_IDS = {6, 7, 8, 9}
+
+# ---- 3 State Classes ----
+STATE_NAMES = ['upright', 'sit', 'lie']
+
+# V10 bone connections: head(0), shoulder(1), hand_R(2), hand_L(3), hips(4), foot_R(5), foot_L(6)
+BONE_CONNECTIONS = [
     (0, 1),  # head -> shoulder
     (1, 2),  # shoulder -> hand_right
     (1, 3),  # shoulder -> hand_left
@@ -67,6 +96,11 @@ KPT_COLORS = [
 LIMB_COLOR = (0, 255, 128)
 COLOR_NORMAL = (0, 255, 0)
 COLOR_FALLING = (0, 0, 255)
+COLOR_STATE = {
+    0: (0, 255, 0),     # upright: green
+    1: (0, 255, 255),   # sit: yellow
+    2: (0, 128, 255),   # lie: orange
+}
 COLOR_TRACK = [
     (255, 128, 0), (0, 255, 128), (128, 0, 255),
     (255, 255, 0), (0, 128, 255), (255, 0, 128),
@@ -77,40 +111,59 @@ COLOR_TRACK = [
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        description='RTMDet-Pose V12: Binary Fall Detection + Rules')
+        description='RTMDet-Pose V13 Multi-Head: Detection + Pose + Action + State + Fall + Tracking')
     parser.add_argument('--config',
-                        default='/home/tbai/mmdetection/mmdetection/configs/rtmdet_bai/rtmdet_pose_v12_binary.py',
+                        default='/home/tbai/mmdetection/mmdetection/configs/rtmdet_bai/rtmdet_pose_v13_multihead.py',
                         help='config path')
     parser.add_argument('--checkpoint',
-                        default='work_dirs/rtmdet_pose_v12_binary/epoch_50.pth',
+                        default='work_dirs/rtmdet_pose_v13/epoch_50.pth',
                         help='checkpoint path')
     parser.add_argument('--input',
                         default='/home/tbai/Desktop/infer',
                         help='input root dir')
     parser.add_argument('--output',
-                        default='/home/tbai/Desktop/fall_infer/v12',
+                        default='/home/tbai/Desktop/fall_infer/v13',
                         help='output root dir')
     parser.add_argument('--det-thr', type=float, default=0.3)
     parser.add_argument('--kpt-thr', type=float, default=0.3)
-    parser.add_argument('--fall-thr', type=float, default=0.5)
+    parser.add_argument('--fall-thr', type=float, default=0.5,
+                        help='Fall probability threshold (applies to combined prob)')
     parser.add_argument('--max-seq-len', type=int, default=30)
     parser.add_argument('--radius', type=int, default=1)
     parser.add_argument('--thickness', type=int, default=1)
-    # Rule post-processing thresholds
-    parser.add_argument('--rule-head-drop-thr', type=float, default=0.15,
-                        help='Head y-drop over 3 frames to confirm fall')
-    parser.add_argument('--rule-head-low-thr', type=float, default=0.7,
-                        help='Head y threshold for "low position" (relative to bbox)')
-    parser.add_argument('--rule-static-frames', type=int, default=5,
-                        help='Frames of no motion to consider "lying still"')
-    parser.add_argument('--rule-sit-frames', type=int, default=5,
-                        help='Frames to check for sit-down pattern')
-    parser.add_argument('--rule-sit-max-head-speed', type=float, default=0.06,
-                        help='Max per-frame head y change for "slow descent"')
-    parser.add_argument('--rule-sit-max-foot-motion', type=float, default=0.03,
-                        help='Max foot motion for "feet stable"')
     args = parser.parse_args()
     return args
+
+
+# ================================================================
+# Bone feature computation (same as V10)
+# ================================================================
+def kpts_to_bones(norm_x, norm_y):
+    """Compute bone features from normalized keypoints."""
+    bones = []
+    for start, end in BONE_CONNECTIONS:
+        dx = float(norm_x[end] - norm_x[start])
+        dy = float(norm_y[end] - norm_y[start])
+        length = math.sqrt(dx * dx + dy * dy + 1e-8)
+        angle = math.atan2(dx, dy)
+        bones.append((dx, dy, angle, length))
+    return bones
+
+
+def build_bone_feature(bones_curr, bones_prev=None):
+    """Build per-bone feature: [dx, dy, angle, length, d_angle, d_length] x 6 = 36."""
+    feat = []
+    for i, (dx, dy, angle, length) in enumerate(bones_curr):
+        if bones_prev is not None:
+            _, _, prev_angle, prev_length = bones_prev[i]
+            d_angle = angle - prev_angle
+            d_angle = (d_angle + math.pi) % (2 * math.pi) - math.pi
+            d_length = length - prev_length
+        else:
+            d_angle = 0.0
+            d_length = 0.0
+        feat.extend([dx, dy, angle, length, d_angle, d_length])
+    return np.array(feat, dtype=np.float32)
 
 
 # ================================================================
@@ -138,122 +191,11 @@ def inference_single(model, img_path, pipeline):
 
 
 # ================================================================
-# Keypoint feature computation (kpt_dim=5: x, y, vis, dx, dy)
-# ================================================================
-def build_kpt_feature(norm_x, norm_y, vis, prev_x=None, prev_y=None):
-    """Build per-keypoint feature: [x, y, vis, dx, dy] x 7 = 35 dim."""
-    K = len(norm_x)
-    feat = np.zeros(K * 5, dtype=np.float32)
-    for i in range(K):
-        dx = 0.0
-        dy = 0.0
-        if prev_x is not None and prev_y is not None:
-            dx = float(norm_x[i] - prev_x[i])
-            dy = float(norm_y[i] - prev_y[i])
-        feat[i * 5 + 0] = float(norm_x[i])
-        feat[i * 5 + 1] = float(norm_y[i])
-        feat[i * 5 + 2] = float(vis[i])
-        feat[i * 5 + 3] = dx
-        feat[i * 5 + 4] = dy
-    return feat
-
-
-# ================================================================
-# Rule-based post-processing
-# ================================================================
-class RulePostProcessor:
-    """Rule-based post-processing for fall detection.
-
-    Rule 1: Head y-coordinate rapid drop → confirm fall (boost probability)
-    Rule 2: Head sustained low position + no motion → lying/fallen (suppress)
-    Rule 3: Sit-down suppression → head drops slowly + feet stable (suppress)
-    Rule 4: Lying static → stronger suppression than Rule 2
-    """
-
-    def __init__(self, head_drop_thr=0.15, head_low_thr=0.7, static_frames=5,
-                 sit_frames=5, sit_max_head_speed=0.06, sit_max_foot_motion=0.03):
-        self.head_drop_thr = head_drop_thr
-        self.head_low_thr = head_low_thr
-        self.static_frames = static_frames
-        # Sit-down detection params
-        self.sit_frames = sit_frames
-        self.sit_max_head_speed = sit_max_head_speed  # max per-frame head Δy for "slow"
-        self.sit_max_foot_motion = sit_max_foot_motion  # max foot motion for "stable"
-        # Per-track history: (head_y, motion_mag, foot_avg_y, foot_motion)
-        self.history = {}
-
-    def reset(self):
-        self.history.clear()
-
-    def update(self, tid, head_norm_y, motion_mag, foot_avg_y=None, foot_motion=None):
-        if tid not in self.history:
-            self.history[tid] = collections.deque(maxlen=30)
-        self.history[tid].append((head_norm_y, motion_mag,
-                                  foot_avg_y if foot_avg_y is not None else 0.0,
-                                  foot_motion if foot_motion is not None else 0.0))
-
-    def adjust_prob(self, tid, raw_prob):
-        """Adjust fall probability based on rules."""
-        if tid not in self.history or len(self.history[tid]) < 2:
-            return raw_prob
-
-        hist = list(self.history[tid])
-
-        # Rule 1: Head rapid drop → boost probability
-        if len(hist) >= 3:
-            y_now = hist[-1][0]
-            y_3ago = hist[-3][0]
-            drop = y_now - y_3ago  # positive = head moved down
-            if drop > self.head_drop_thr:
-                # Check if feet also moved a lot (true fall vs sit-down)
-                foot_motion_avg = np.mean([h[3] for h in hist[-3:]])
-                if foot_motion_avg > self.sit_max_foot_motion:
-                    # Feet also moving → likely real fall, boost
-                    boost = min(drop / self.head_drop_thr * 0.3, 0.4)
-                    raw_prob = min(raw_prob + boost, 1.0)
-                # else: head drops but feet stable → might be sit-down, don't boost
-
-        # Rule 2+4: Head sustained low + no motion → lying still (strong suppress)
-        if len(hist) >= self.static_frames:
-            recent = hist[-self.static_frames:]
-            all_low = all(h[0] > self.head_low_thr for h in recent)
-            all_static = all(h[1] < 0.02 for h in recent)
-            if all_low and all_static:
-                raw_prob = raw_prob * 0.3  # stronger suppression (was 0.5)
-
-        # Rule 3: Sit-down suppression
-        # Head descends gradually over several frames + feet stay stable
-        if len(hist) >= self.sit_frames:
-            recent = hist[-self.sit_frames:]
-            head_ys = [h[0] for h in recent]
-            # Check: head is descending (total drop > 0.05)
-            total_head_drop = head_ys[-1] - head_ys[0]
-            if total_head_drop > 0.05:
-                # Check: descent is gradual (per-frame speed is small)
-                per_frame_drops = [head_ys[j+1] - head_ys[j]
-                                   for j in range(len(head_ys)-1)]
-                max_per_frame = max(per_frame_drops)
-                # Check: feet are stable
-                foot_motions = [h[3] for h in recent]
-                avg_foot_motion = np.mean(foot_motions)
-
-                if (max_per_frame < self.sit_max_head_speed and
-                        avg_foot_motion < self.sit_max_foot_motion):
-                    # Slow controlled descent + feet stable → sitting down
-                    raw_prob = raw_prob * 0.3
-
-        return raw_prob
-
-    def cleanup(self, active_ids):
-        for tid in list(self.history.keys()):
-            if tid not in active_ids:
-                del self.history[tid]
-
-
-# ================================================================
 # Visualization
 # ================================================================
-def visualize(img, pred, args, track_id=None, fall_prob=None, is_falling=False):
+def visualize(img, pred, args, track_id=None, action_cls=None,
+              action_name=None, state_name=None, fall_prob=None,
+              is_falling=False):
     img_vis = img.copy()
 
     bboxes = pred.bboxes.cpu().numpy()
@@ -264,6 +206,7 @@ def visualize(img, pred, args, track_id=None, fall_prob=None, is_falling=False):
     for idx in range(len(bboxes)):
         det_score = bbox_scores[idx]
 
+        # Box color: red for falling, otherwise track color
         if is_falling:
             box_color = COLOR_FALLING
         elif track_id is not None:
@@ -274,10 +217,15 @@ def visualize(img, pred, args, track_id=None, fall_prob=None, is_falling=False):
         x1, y1, x2, y2 = map(int, bboxes[idx][:4])
         cv2.rectangle(img_vis, (x1, y1), (x2, y2), box_color, args.thickness)
 
+        # Label: ID det_score [state] action fall_prob FALL!
         parts = []
         if track_id is not None:
             parts.append(f'ID:{track_id}')
         parts.append(f'{det_score:.2f}')
+        if state_name is not None:
+            parts.append(f'[{state_name}]')
+        if action_name is not None:
+            parts.append(action_name)
         if fall_prob is not None:
             parts.append(f'fall:{fall_prob:.2f}')
         if is_falling:
@@ -294,13 +242,15 @@ def visualize(img, pred, args, track_id=None, fall_prob=None, is_falling=False):
         kpts = keypoints[idx]
         scrs = kpt_scores[idx]
 
-        for (a, b) in SKELETON:
+        # Skeleton
+        for (a, b) in BONE_CONNECTIONS:
             if a < len(kpts) and b < len(kpts):
                 if scrs[a] > args.kpt_thr and scrs[b] > args.kpt_thr:
                     pt1 = (int(kpts[a][0]), int(kpts[a][1]))
                     pt2 = (int(kpts[b][0]), int(kpts[b][1]))
                     cv2.line(img_vis, pt1, pt2, LIMB_COLOR, args.thickness)
 
+        # Keypoints
         for i, (kpt, score) in enumerate(zip(kpts, scrs)):
             if score > args.kpt_thr:
                 x, y = int(kpt[0]), int(kpt[1])
@@ -311,26 +261,22 @@ def visualize(img, pred, args, track_id=None, fall_prob=None, is_falling=False):
 
 
 # ================================================================
-# Keypoint Tracker with Rule Post-Processing
+# Multi-Head Bone Tracker
 # ================================================================
-class KptTracker:
-    """V12 tracker: keypoint features (kpt_dim=5) + binary fall + rule post-processing."""
+class MultiHeadBoneTracker:
+    """V13 tracker: bone features + multi-head (action + state + fall)."""
 
-    def __init__(self, model, tracker_cfg, max_seq_len=30, rule_processor=None):
+    def __init__(self, model, tracker_cfg, max_seq_len=30):
         self.model = model
         self.tracker = MODELS.build(tracker_cfg)
         self.max_seq_len = max_seq_len
-        self.rule_processor = rule_processor
-        # Per-track buffers
-        self.feat_buffers = {}
-        self.prev_norm = {}  # {tid: (norm_x, norm_y)}
+        self.bone_buffers = {}
+        self.prev_bones = {}
 
     def reset(self):
         self.tracker.reset()
-        self.feat_buffers.clear()
-        self.prev_norm.clear()
-        if self.rule_processor:
-            self.rule_processor.reset()
+        self.bone_buffers.clear()
+        self.prev_bones.clear()
 
     @torch.no_grad()
     def process(self, img_path, pipeline, frame_id, device):
@@ -350,7 +296,7 @@ class KptTracker:
         if num_tracks == 0:
             return img, track_inst, {}
 
-        # Match tracked → predicted for keypoints
+        # Match tracked -> predicted for keypoints
         pred = result.pred_instances
         from mmdet.structures.bbox import bbox_overlaps
 
@@ -370,78 +316,64 @@ class KptTracker:
         track_inst.keypoints = track_kpts
         track_inst.keypoint_scores = track_kpt_scores
 
-        # Action classification with keypoint temporal features
+        # Action classification with bone temporal features (multi-head)
         action_info = {}
         if self.model.action_head is not None:
             for i in range(num_tracks):
                 tid = int(track_inst.instances_id[i])
                 bbox = track_inst.bboxes[i]
                 kpt = track_kpts[i]
-                vis = track_kpt_scores[i]
 
                 x1, y1, x2, y2 = bbox
                 w = max(float(x2 - x1), 1.0)
                 h = max(float(y2 - y1), 1.0)
                 norm_x = ((kpt[:, 0] - x1) / w).clamp(0, 1).cpu().numpy()
                 norm_y = ((kpt[:, 1] - y1) / h).clamp(0, 1).cpu().numpy()
-                vis_np = vis.cpu().numpy()
 
-                # Build kpt feature (kpt_dim=5)
-                prev = self.prev_norm.get(tid, None)
-                prev_x = prev[0] if prev is not None else None
-                prev_y = prev[1] if prev is not None else None
-                kpt_feat = build_kpt_feature(
-                    norm_x, norm_y, vis_np, prev_x, prev_y)  # (35,)
-                self.prev_norm[tid] = (norm_x.copy(), norm_y.copy())
-
-                # Accumulate in buffer
-                if tid not in self.feat_buffers:
-                    self.feat_buffers[tid] = collections.deque(
+                # Accumulate bone features
+                if tid not in self.bone_buffers:
+                    self.bone_buffers[tid] = collections.deque(
                         maxlen=self.max_seq_len)
-                self.feat_buffers[tid].append(kpt_feat)
+                bones_curr = kpts_to_bones(norm_x, norm_y)
+                bones_prev = self.prev_bones.get(tid, None)
+                bone_feat = build_bone_feature(bones_curr, bones_prev)
+                self.bone_buffers[tid].append(bone_feat)
+                self.prev_bones[tid] = bones_curr
 
-                # GRU temporal prediction (binary: returns (N,) probability)
-                seq = np.stack(list(self.feat_buffers[tid]))  # (T, 35)
+                # GRU temporal prediction (multi-head)
+                seq = np.stack(list(self.bone_buffers[tid]))  # (T, 36)
                 seq_tensor = torch.from_numpy(seq).unsqueeze(0).to(device)
-                raw_prob = float(
-                    self.model.action_head.predict(seq_tensor).cpu().item())
+                out = self.model.action_head.predict(seq_tensor)
 
-                # Rule-based post-processing
-                if self.rule_processor:
-                    # head_norm_y: head keypoint[0] normalized y position
-                    head_y = float(norm_y[0])
-                    # foot keypoints: 5=foot_R, 6=foot_L
-                    foot_avg_y = float((norm_y[5] + norm_y[6]) / 2.0)
-                    # motion_magnitude: average keypoint movement
-                    if prev_x is not None:
-                        motion = float(np.mean(
-                            np.abs(norm_x - prev_x) + np.abs(norm_y - prev_y)))
-                        # foot-specific motion
-                        foot_motion = float(
-                            (np.abs(norm_x[5] - prev_x[5]) + np.abs(norm_y[5] - prev_y[5]) +
-                             np.abs(norm_x[6] - prev_x[6]) + np.abs(norm_y[6] - prev_y[6])) / 2.0)
-                    else:
-                        motion = 0.0
-                        foot_motion = 0.0
-                    self.rule_processor.update(tid, head_y, motion,
-                                               foot_avg_y, foot_motion)
-                    fall_prob = self.rule_processor.adjust_prob(tid, raw_prob)
-                else:
-                    fall_prob = raw_prob
+                # Extract all outputs
+                action_probs = out['action_probs'][0].cpu().numpy()
+                cls_id = int(out['action_class'][0].cpu().item())
+                state_id = int(out['state_class'][0].cpu().item())
+                fall_prob_head = float(out['fall_prob'][0].cpu().item())
+
+                # Action-based fall probability (sum of classes 6-9)
+                action_fall_prob = float(action_probs[6:10].sum())
+
+                # Combined fall probability: max of dedicated head and action-based
+                combined_fall_prob = max(fall_prob_head, action_fall_prob)
 
                 action_info[tid] = {
-                    'fall_prob': fall_prob,
-                    'raw_prob': raw_prob,
+                    'cls_id': cls_id,
+                    'name': ACTION_CLASSES[cls_id],
+                    'state_id': state_id,
+                    'state_name': STATE_NAMES[state_id],
+                    'fall_prob_head': fall_prob_head,
+                    'action_fall_prob': action_fall_prob,
+                    'fall_prob': combined_fall_prob,
+                    'probs': action_probs,
                 }
 
         # Cleanup stale tracks
         active = set(track_inst.instances_id.tolist()) if num_tracks > 0 else set()
-        for tid in list(self.feat_buffers.keys()):
+        for tid in list(self.bone_buffers.keys()):
             if tid not in active:
-                del self.feat_buffers[tid]
-                self.prev_norm.pop(tid, None)
-        if self.rule_processor:
-            self.rule_processor.cleanup(active)
+                del self.bone_buffers[tid]
+                self.prev_bones.pop(tid, None)
 
         return img, track_inst, action_info
 
@@ -475,6 +407,9 @@ def process_sequence(model, tracker, pipeline, image_files, output_dir,
         for t_idx in range(len(track_inst)):
             tid = int(track_inst.instances_id[t_idx])
             info = action_info.get(tid, {})
+            cls_id = info.get('cls_id', 0)
+            action_name = info.get('name', '')
+            state_name = info.get('state_name', '')
             fall_prob = info.get('fall_prob', 0.0)
             is_falling = fall_prob >= args.fall_thr
 
@@ -487,6 +422,9 @@ def process_sequence(model, tracker, pipeline, image_files, output_dir,
 
             img_vis = visualize(img_vis, single, args,
                                 track_id=tid,
+                                action_cls=cls_id,
+                                action_name=action_name,
+                                state_name=state_name,
                                 fall_prob=fall_prob,
                                 is_falling=is_falling)
             if is_falling:
@@ -507,7 +445,7 @@ def main():
     args = parse_args()
 
     print("=" * 70)
-    print("RTMDet-Pose V12: Binary Fall Detection + Rule Post-Processing")
+    print("RTMDet-Pose V13 Multi-Head: Action + State + Fall Detection")
     print("=" * 70)
     print(f"Config:     {args.config}")
     print(f"Checkpoint: {args.checkpoint}")
@@ -515,9 +453,6 @@ def main():
     print(f"Output:     {args.output}")
     print(f"Radius:     {args.radius}")
     print(f"Fall thr:   {args.fall_thr}")
-    print(f"Rules: head_drop={args.rule_head_drop_thr}, "
-          f"head_low={args.rule_head_low_thr}, "
-          f"static_frames={args.rule_static_frames}")
     print("=" * 70)
 
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
@@ -525,31 +460,24 @@ def main():
     model = init_detector(args.config, args.checkpoint, device=device)
     model.eval()
     has_action = hasattr(model, 'action_head') and model.action_head is not None
-    num_cls = model.action_head.num_classes if has_action else 'N/A'
-    print(f"Model loaded! action_head={'YES' if has_action else 'NO'}, "
-          f"num_classes={num_cls}")
+    print(f"Model loaded! action_head={'YES' if has_action else 'NO'}")
+    if has_action:
+        head = model.action_head
+        print(f"  type: {type(head).__name__}")
+        print(f"  num_classes={head.num_classes}, "
+              f"num_states={getattr(head, 'num_states', 'N/A')}, "
+              f"bone_mode={getattr(head, 'bone_mode', False)}")
+        print(f"  params: {sum(p.numel() for p in head.parameters()):,}")
 
     cfg = Config.fromfile(args.config)
     tracker_cfg = cfg.get('tracker', None)
     if tracker_cfg is None:
         raise RuntimeError('No tracker config found in config file')
 
-    rule_processor = RulePostProcessor(
-        head_drop_thr=args.rule_head_drop_thr,
-        head_low_thr=args.rule_head_low_thr,
-        static_frames=args.rule_static_frames,
-        sit_frames=args.rule_sit_frames,
-        sit_max_head_speed=args.rule_sit_max_head_speed,
-        sit_max_foot_motion=args.rule_sit_max_foot_motion,
-    )
-
-    tracker = KptTracker(
-        model, tracker_cfg,
-        max_seq_len=args.max_seq_len,
-        rule_processor=rule_processor)
+    tracker = MultiHeadBoneTracker(model, tracker_cfg, max_seq_len=args.max_seq_len)
     pipeline = Compose(INFER_PIPELINE)
 
-    # Walk the nested directory
+    # Walk the nested directory: input/{action}/{camera}/undistorted_stitched_png/*.png
     input_root = args.input
     output_root = args.output
     image_exts = {'.png', '.jpg', '.jpeg', '.bmp', '.tif', '.tiff'}
@@ -575,6 +503,7 @@ def main():
             if not os.path.isdir(img_dir):
                 continue
 
+            # Collect images
             image_files = sorted([
                 os.path.join(img_dir, f)
                 for f in os.listdir(img_dir)

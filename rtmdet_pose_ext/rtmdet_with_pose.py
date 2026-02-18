@@ -197,8 +197,14 @@ class RTMDetWithPose(SingleStageDetector):
                         losses.update(action_losses)
                     else:
                         losses['loss_action'] = x[0].sum() * 0
+                        if hasattr(self.action_head, 'num_states'):
+                            losses['loss_state'] = x[0].sum() * 0
+                            losses['loss_fall'] = x[0].sum() * 0
             else:
                 losses['loss_action'] = x[0].sum() * 0
+                if hasattr(self.action_head, 'num_states'):
+                    losses['loss_state'] = x[0].sum() * 0
+                    losses['loss_fall'] = x[0].sum() * 0
 
         return losses
     
@@ -792,13 +798,20 @@ class RTMDetWithPose(SingleStageDetector):
             - action_scores: (N, 10) per-class probabilities
             - action_class: (N,) predicted class IDs
             - is_falling: (N,) bool
+        For V13 multi-head, additionally attaches:
+            - state_probs: (N, 3) state probabilities
+            - state_class: (N,) predicted state (upright/sit/lie)
+            - fall_prob: (N,) dedicated fall probability
         For binary (backward compat):
             - action_scores: (N,) falling probability
         """
         is_multiclass = isinstance(action_output, dict)
+        has_state = is_multiclass and 'state_probs' in action_output
 
         if is_multiclass:
             num_classes = action_output['action_probs'].size(-1)
+        if has_state:
+            num_states = action_output['state_probs'].size(-1)
 
         for inst in det_results:
             if inst is None or len(inst) == 0:
@@ -809,6 +822,10 @@ class RTMDetWithPose(SingleStageDetector):
                 inst.action_scores = torch.zeros(n, num_classes, device=device)
                 inst.action_class = torch.zeros(n, dtype=torch.long, device=device)
                 inst.is_falling = torch.zeros(n, dtype=torch.bool, device=device)
+                if has_state:
+                    inst.state_probs = torch.zeros(n, num_states, device=device)
+                    inst.state_class = torch.zeros(n, dtype=torch.long, device=device)
+                    inst.fall_prob = torch.zeros(n, device=device)
             else:
                 inst.action_scores = torch.zeros(n, device=device)
 
@@ -822,5 +839,9 @@ class RTMDetWithPose(SingleStageDetector):
                 inst.action_scores[inst_idx] = action_output['action_probs'][i]
                 inst.action_class[inst_idx] = action_output['action_class'][i]
                 inst.is_falling[inst_idx] = action_output['is_falling'][i]
+                if has_state:
+                    inst.state_probs[inst_idx] = action_output['state_probs'][i]
+                    inst.state_class[inst_idx] = action_output['state_class'][i]
+                    inst.fall_prob[inst_idx] = action_output['fall_prob'][i]
             else:
                 inst.action_scores[inst_idx] = action_output[i]

@@ -1,0 +1,74 @@
+{
+  "video_id": "person_AAB_train",
+  "fps": 5,
+  "person_id": "AAB",
+  "total_frames": 337,
+  "duration_sec": 67.4,
+  "intervals": {
+    "fall": [
+      [
+        212,
+        245
+      ],
+      [
+        249,
+        304
+      ],
+      [
+        308,
+        336
+      ]
+    ],
+    "sit": [],
+    "lie": [
+      [
+        166,
+        208
+      ]
+    ]
+  },
+  "clips": [
+    {
+      "source": "1A-2_Walking_AAB",
+      "action_class": 1,
+      "start_frame": 0,
+      "end_frame": 85
+    },
+    {
+      "source": "1A-6_Getting_up_from_lying_down_AAB",
+      "action_class": 5,
+      "start_frame": 89,
+      "end_frame": 134
+    },
+    {
+      "source": "1A-4_Standing_up_AAB",
+      "action_class": 3,
+      "start_frame": 138,
+      "end_frame": 162
+    },
+    {
+      "source": "1A-5_Lying_down_AAB",
+      "action_class": 4,
+      "start_frame": 166,
+      "end_frame": 208
+    },
+    {
+      "source": "1A-7_Falling_while_walking_AAB",
+      "action_class": 6,
+      "start_frame": 212,
+      "end_frame": 245
+    },
+    {
+      "source": "1A-8_Falling_while_trying_to_stand_AAB",
+      "action_class": 7,
+      "start_frame": 249,
+      "end_frame": 304
+    },
+    {
+      "source": "1A-9_Falling_while_trying_to_sit_AAB",
+      "action_class": 8,
+      "start_frame": 308,
+      "end_frame": 336
+    }
+  ]
+}
