@@ -121,3 +121,5 @@ work_dirs/
 *.pth
 *.py~
 *.sh~
+figures/
+docs/experiment_paper_prompt.md
