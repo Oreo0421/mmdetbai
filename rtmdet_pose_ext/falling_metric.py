@@ -31,6 +31,10 @@ ACTION_NAMES = [
 ]
 FALLING_CLASS_IDS = {6, 7, 8, 9}
 
+# V14: 4-class action mapping (10-class GT → 4-class)
+ACTION4_NAMES = ['standing', 'walking', 'sitting', 'lying']
+ACTION_TO_ACTION4 = [0, 1, 2, 0, 3, 0, 3, 3, 3, 3]
+
 
 @METRICS.register_module(force=True)
 class ActionMetric(BaseMetric):
@@ -101,16 +105,28 @@ class ActionMetric(BaseMetric):
             pred_scores = pred['scores'].cpu().numpy()
             action_scores = pred['action_scores'].cpu().numpy()
 
-            # Determine predicted class
+            # Determine predicted class and fall probability
+            has_fall_prob = 'fall_prob' in pred
+            if has_fall_prob:
+                fall_probs = pred['fall_prob'].cpu().numpy()
             if action_scores.ndim == 2 and action_scores.shape[-1] > 1:
+                num_pred_classes = action_scores.shape[-1]
                 # Multi-class: (M, C) probabilities
                 pred_classes = action_scores.argmax(axis=-1)
-                fall_probs = action_scores[:, 6:].sum(axis=-1)
+                if not has_fall_prob:
+                    if num_pred_classes >= 10:
+                        # 10-class: sum falling classes 6-9
+                        fall_probs = action_scores[:, 6:].sum(axis=-1)
+                    else:
+                        # V14 4-class or other: no falling info in action_scores
+                        fall_probs = np.zeros(len(pred_bboxes), dtype=np.float32)
             else:
+                num_pred_classes = 1
                 # Binary: (M,) falling probability
                 action_scores = action_scores.flatten()
                 pred_classes = (action_scores >= 0.5).astype(int) * 6
-                fall_probs = action_scores
+                if not has_fall_prob:
+                    fall_probs = action_scores
 
             gt_list = self._gt_data.get(img_id, [])
             if len(gt_list) == 0 or len(pred_bboxes) == 0:
@@ -138,6 +154,7 @@ class ActionMetric(BaseMetric):
                         'gt_class': int(gt_classes[best_gt]),
                         'fall_prob': float(fall_probs[pred_idx]),
                         'det_score': float(pred_scores[pred_idx]),
+                        'num_pred_classes': num_pred_classes,
                     })
 
     def compute_metrics(self, results: List[dict]) -> Dict[str, float]:
@@ -185,9 +202,46 @@ class ActionMetric(BaseMetric):
 
         macro_f1 = np.mean(per_class_f1)
 
+        # ---- V14: 4-class action evaluation ----
+        # Detect if predictions are 4-class (pred_classes in 0-3)
+        num_pred_cls = results[0].get('num_pred_classes', 10)
+        if num_pred_cls == 4:
+            gt_action4 = np.array([ACTION_TO_ACTION4[c] if 0 <= c < 10 else -1
+                                   for c in gt_classes])
+            # pred_classes are already 0-3 from V14
+            valid4 = gt_action4 >= 0
+            if valid4.any():
+                gt4 = gt_action4[valid4]
+                pred4 = pred_classes[valid4]
+                cm4 = np.zeros((4, 4), dtype=int)
+                for g, p in zip(gt4, pred4):
+                    if 0 <= g < 4 and 0 <= p < 4:
+                        cm4[g, p] += 1
+                acc4 = int((gt4 == pred4).sum()) / max(len(gt4), 1)
+                lines.append(f'\n--- 4-class Action (V14) ---')
+                header4 = f'{"":>12s} {"Prec":>6s} {"Recall":>6s} {"F1":>6s} {"Support":>8s}'
+                lines.append(header4)
+                per_class_f1_4 = []
+                for c in range(4):
+                    tp4 = cm4[c, c]
+                    fp4 = cm4[:, c].sum() - tp4
+                    fn4 = cm4[c, :].sum() - tp4
+                    sup4 = int(cm4[c, :].sum())
+                    p4 = tp4 / max(tp4 + fp4, 1)
+                    r4 = tp4 / max(tp4 + fn4, 1)
+                    f4 = 2 * p4 * r4 / max(p4 + r4, 1e-8)
+                    per_class_f1_4.append(f4)
+                    lines.append(
+                        f'{ACTION4_NAMES[c]:>12s} {p4:6.3f} {r4:6.3f} {f4:6.3f} {sup4:8d}')
+                macro_f1_4 = np.mean(per_class_f1_4)
+                lines.append(f'  Accuracy:  {acc4:.4f}')
+                lines.append(f'  Macro-F1:  {macro_f1_4:.4f}')
+
         # ---- Binary falling (grouped classes 6-9) ----
         gt_falling = np.array([1 if c in FALLING_CLASS_IDS else 0 for c in gt_classes])
-        pred_falling = np.array([1 if c in FALLING_CLASS_IDS else 0 for c in pred_classes])
+        # Use fall_prob threshold for pred_falling (works for V12 binary,
+        # V13 multi-head, and V14 4-class+fall where pred_classes are 0-3)
+        pred_falling = (fall_probs >= 0.5).astype(int)
 
         fall_tp = int(((pred_falling == 1) & (gt_falling == 1)).sum())
         fall_fp = int(((pred_falling == 1) & (gt_falling == 0)).sum())
@@ -225,7 +279,13 @@ class ActionMetric(BaseMetric):
             fall_f1=round(fall_f1, 4),
             fall_ap=round(fall_ap, 4),
         )
-        # Per-class F1 for monitoring
+        # V14 4-class metrics
+        if num_pred_cls == 4 and valid4.any():
+            metrics['action4_accuracy'] = round(acc4, 4)
+            metrics['action4_macro_f1'] = round(macro_f1_4, 4)
+            for c in range(4):
+                metrics[f'f1_{ACTION4_NAMES[c]}'] = round(per_class_f1_4[c], 4)
+        # Per-class F1 for 10-class monitoring
         for c in range(N):
             name = ACTION_NAMES[c] if c < len(ACTION_NAMES) else f'class_{c}'
             name = name.lower().replace(' ', '_')
@@ -324,7 +384,9 @@ class FallingMetric(BaseMetric):
             action_scores = pred['action_scores'].cpu().numpy()
 
             # Get falling probability
-            if action_scores.ndim == 2 and action_scores.shape[-1] > 1:
+            if 'fall_prob' in pred:
+                fall_probs = pred['fall_prob'].cpu().numpy()
+            elif action_scores.ndim == 2 and action_scores.shape[-1] >= 10:
                 fall_probs = action_scores[:, 6:].sum(axis=-1)
             else:
                 fall_probs = action_scores.flatten()
