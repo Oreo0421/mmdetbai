@@ -168,47 +168,16 @@ class ActionMetric(BaseMetric):
         pred_classes = np.array([r['pred_class'] for r in results])
         gt_classes = np.array([r['gt_class'] for r in results])
         fall_probs = np.array([r['fall_prob'] for r in results])
-
-        N = self.num_classes
-
-        # ---- 10-class confusion matrix ----
-        cm = np.zeros((N, N), dtype=int)
-        for gt, pred in zip(gt_classes, pred_classes):
-            if 0 <= gt < N and 0 <= pred < N:
-                cm[gt, pred] += 1
-
-        # Overall accuracy
         total = len(results)
-        correct = int((pred_classes == gt_classes).sum())
-        accuracy = correct / max(total, 1)
 
-        # Per-class metrics
-        header = f'\n{"":>20s} {"Prec":>6s} {"Recall":>6s} {"F1":>6s} {"Support":>8s}'
-        lines = [header]
-        per_class_f1 = []
-        for c in range(N):
-            tp = cm[c, c]
-            fp = cm[:, c].sum() - tp
-            fn = cm[c, :].sum() - tp
-            support = int(cm[c, :].sum())
-            prec = tp / max(tp + fp, 1)
-            rec = tp / max(tp + fn, 1)
-            f1 = 2 * prec * rec / max(prec + rec, 1e-8)
-            per_class_f1.append(f1)
-            name = ACTION_NAMES[c] if c < len(ACTION_NAMES) else f'class_{c}'
-            fall_marker = ' *' if c in FALLING_CLASS_IDS else ''
-            lines.append(
-                f'{name:>20s} {prec:6.3f} {rec:6.3f} {f1:6.3f} {support:8d}{fall_marker}')
-
-        macro_f1 = np.mean(per_class_f1)
-
-        # ---- V14: 4-class action evaluation ----
-        # Detect if predictions are 4-class (pred_classes in 0-3)
         num_pred_cls = results[0].get('num_pred_classes', 10)
+        lines = []
+        metrics = OrderedDict()
+
         if num_pred_cls == 4:
+            # ---- V14: 4-class action evaluation only ----
             gt_action4 = np.array([ACTION_TO_ACTION4[c] if 0 <= c < 10 else -1
                                    for c in gt_classes])
-            # pred_classes are already 0-3 from V14
             valid4 = gt_action4 >= 0
             if valid4.any():
                 gt4 = gt_action4[valid4]
@@ -218,7 +187,7 @@ class ActionMetric(BaseMetric):
                     if 0 <= g < 4 and 0 <= p < 4:
                         cm4[g, p] += 1
                 acc4 = int((gt4 == pred4).sum()) / max(len(gt4), 1)
-                lines.append(f'\n--- 4-class Action (V14) ---')
+                lines.append(f'\n--- 4-class Action ---')
                 header4 = f'{"":>12s} {"Prec":>6s} {"Recall":>6s} {"F1":>6s} {"Support":>8s}'
                 lines.append(header4)
                 per_class_f1_4 = []
@@ -236,11 +205,51 @@ class ActionMetric(BaseMetric):
                 macro_f1_4 = np.mean(per_class_f1_4)
                 lines.append(f'  Accuracy:  {acc4:.4f}')
                 lines.append(f'  Macro-F1:  {macro_f1_4:.4f}')
+                metrics['accuracy'] = round(acc4, 4)
+                metrics['macro_f1'] = round(macro_f1_4, 4)
+                for c in range(4):
+                    metrics[f'f1_{ACTION4_NAMES[c]}'] = round(per_class_f1_4[c], 4)
+            else:
+                metrics['accuracy'] = 0.0
+                metrics['macro_f1'] = 0.0
+        else:
+            # ---- 10-class evaluation ----
+            N = self.num_classes
+            cm = np.zeros((N, N), dtype=int)
+            for gt, pred in zip(gt_classes, pred_classes):
+                if 0 <= gt < N and 0 <= pred < N:
+                    cm[gt, pred] += 1
+            correct = int((pred_classes == gt_classes).sum())
+            accuracy = correct / max(total, 1)
+            header = f'\n{"":>20s} {"Prec":>6s} {"Recall":>6s} {"F1":>6s} {"Support":>8s}'
+            lines.append(header)
+            per_class_f1 = []
+            for c in range(N):
+                tp = cm[c, c]
+                fp = cm[:, c].sum() - tp
+                fn = cm[c, :].sum() - tp
+                support = int(cm[c, :].sum())
+                prec = tp / max(tp + fp, 1)
+                rec = tp / max(tp + fn, 1)
+                f1 = 2 * prec * rec / max(prec + rec, 1e-8)
+                per_class_f1.append(f1)
+                name = ACTION_NAMES[c] if c < len(ACTION_NAMES) else f'class_{c}'
+                fall_marker = ' *' if c in FALLING_CLASS_IDS else ''
+                lines.append(
+                    f'{name:>20s} {prec:6.3f} {rec:6.3f} {f1:6.3f} {support:8d}{fall_marker}')
+            macro_f1 = np.mean(per_class_f1)
+            lines.append(f'\n--- 10-class Summary ---')
+            lines.append(f'  Accuracy:  {accuracy:.4f}')
+            lines.append(f'  Macro-F1:  {macro_f1:.4f}')
+            metrics['accuracy'] = round(accuracy, 4)
+            metrics['macro_f1'] = round(macro_f1, 4)
+            for c in range(N):
+                name = ACTION_NAMES[c] if c < len(ACTION_NAMES) else f'class_{c}'
+                name = name.lower().replace(' ', '_')
+                metrics[f'f1_{name}'] = round(per_class_f1[c], 4)
 
         # ---- Binary falling (grouped classes 6-9) ----
         gt_falling = np.array([1 if c in FALLING_CLASS_IDS else 0 for c in gt_classes])
-        # Use fall_prob threshold for pred_falling (works for V12 binary,
-        # V13 multi-head, and V14 4-class+fall where pred_classes are 0-3)
         pred_falling = (fall_probs >= 0.5).astype(int)
 
         fall_tp = int(((pred_falling == 1) & (gt_falling == 1)).sum())
@@ -252,14 +261,9 @@ class ActionMetric(BaseMetric):
         fall_rec = fall_tp / max(fall_tp + fall_fn, 1)
         fall_f1 = 2 * fall_prec * fall_rec / max(fall_prec + fall_rec, 1e-8)
         fall_acc = (fall_tp + fall_tn) / max(total, 1)
-
-        # AP for falling detection
         fall_ap = self._compute_ap(fall_probs, gt_falling)
 
-        lines.append(f'\n--- 10-class Summary ---')
-        lines.append(f'  Accuracy:  {accuracy:.4f}')
-        lines.append(f'  Macro-F1:  {macro_f1:.4f}')
-        lines.append(f'\n--- Binary Falling (classes 6-9 grouped) ---')
+        lines.append(f'\n--- Binary Falling ---')
         lines.append(f'  TP={fall_tp} FP={fall_fp} TN={fall_tn} FN={fall_fn}')
         lines.append(f'  Accuracy:  {fall_acc:.4f}')
         lines.append(f'  Precision: {fall_prec:.4f}')
@@ -270,26 +274,11 @@ class ActionMetric(BaseMetric):
         logger.info('\n--- Action Classification Metrics ---' + '\n'.join(lines)
                      + '\n' + '-' * 40)
 
-        metrics = OrderedDict(
-            accuracy=round(accuracy, 4),
-            macro_f1=round(macro_f1, 4),
-            fall_accuracy=round(fall_acc, 4),
-            fall_precision=round(fall_prec, 4),
-            fall_recall=round(fall_rec, 4),
-            fall_f1=round(fall_f1, 4),
-            fall_ap=round(fall_ap, 4),
-        )
-        # V14 4-class metrics
-        if num_pred_cls == 4 and valid4.any():
-            metrics['action4_accuracy'] = round(acc4, 4)
-            metrics['action4_macro_f1'] = round(macro_f1_4, 4)
-            for c in range(4):
-                metrics[f'f1_{ACTION4_NAMES[c]}'] = round(per_class_f1_4[c], 4)
-        # Per-class F1 for 10-class monitoring
-        for c in range(N):
-            name = ACTION_NAMES[c] if c < len(ACTION_NAMES) else f'class_{c}'
-            name = name.lower().replace(' ', '_')
-            metrics[f'f1_{name}'] = round(per_class_f1[c], 4)
+        metrics['fall_accuracy'] = round(fall_acc, 4)
+        metrics['fall_precision'] = round(fall_prec, 4)
+        metrics['fall_recall'] = round(fall_rec, 4)
+        metrics['fall_f1'] = round(fall_f1, 4)
+        metrics['fall_ap'] = round(fall_ap, 4)
 
         return metrics
 

@@ -473,7 +473,8 @@ class ActionMultiHead(nn.Module):
             self.fall_classifier(h),
         )
 
-    def loss(self, kpt_features: Tensor, gt_labels: Tensor) -> dict:
+    def loss(self, kpt_features: Tensor, gt_labels: Tensor,
+             gt_labels_orig: Optional[Tensor] = None) -> dict:
         """Calculate multi-head losses.
 
         Args:
@@ -748,12 +749,14 @@ class ActionV14Head(nn.Module):
         h = self._encode(kpt_features)
         return self.action_classifier(h), self.fall_classifier(h)
 
-    def loss(self, kpt_features: Tensor, gt_labels: Tensor) -> dict:
+    def loss(self, kpt_features: Tensor, gt_labels: Tensor,
+             gt_labels_orig: Optional[Tensor] = None) -> dict:
         """Calculate dual-head losses.
 
         Args:
             kpt_features: (N, T, K*D) input features.
             gt_labels: (N,) action class labels (0-9). -1 = invalid.
+            gt_labels_orig: ignored, kept for API compatibility.
 
         Returns:
             dict with 'loss_action' and 'loss_fall'.

@@ -291,11 +291,13 @@ class RulePostProcessor:
         self.history = {}
         self.action_history = {}  # tid -> deque of action_class
         self.consec_fall = {}     # tid -> consecutive fall frame count
+        self.fall_locked = {}     # tid -> True if fall state is locked
 
     def reset(self):
         self.history.clear()
         self.action_history.clear()
         self.consec_fall.clear()
+        self.fall_locked.clear()
 
     def update(self, tid, head_norm_y, motion_mag, foot_avg_y=None,
                foot_motion=None, action_class=None):
@@ -429,6 +431,30 @@ class RulePostProcessor:
                 # Not enough consecutive frames yet — suppress to below threshold
                 raw_prob = min(raw_prob, 0.3)
 
+        # Rule 11: Fall lock — once a person falls, keep FALL until they get up
+        # Check if person is getting up: head rising significantly over recent frames
+        is_getting_up = False
+        if len(hist) >= 5:
+            head_rise = hist[-5][0] - hist[-1][0]  # positive = head moving UP
+            if head_rise > 0.15:
+                is_getting_up = True
+        # Also unlock if action is standing or walking for several frames
+        if len(act_hist) >= 3:
+            recent_3 = act_hist[-3:]
+            if all(a in (0, 1) for a in recent_3):  # standing/walking
+                is_getting_up = True
+
+        if raw_prob >= 0.5:
+            # Entering fall state -> lock
+            self.fall_locked[tid] = True
+        elif self.fall_locked.get(tid, False):
+            if is_getting_up:
+                # Person recovered -> unlock
+                self.fall_locked[tid] = False
+            else:
+                # Still locked -> override prob to keep FALL
+                raw_prob = max(raw_prob, 0.85)
+
         return raw_prob
 
     def cleanup(self, active_ids):
@@ -441,6 +467,9 @@ class RulePostProcessor:
         for tid in list(self.consec_fall.keys()):
             if tid not in active_ids:
                 del self.consec_fall[tid]
+        for tid in list(self.fall_locked.keys()):
+            if tid not in active_ids:
+                del self.fall_locked[tid]
 
 
 # ================================================================
